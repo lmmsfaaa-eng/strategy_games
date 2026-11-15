@@ -23,6 +23,13 @@ public enum CmdType : byte
     SetNode,        // S=node id of a custom branch
     Cast,           // S=action id, A=caster unit (0 = the empire), B=target tile (-1 = none)
     VoteResolution, // A=1 for / 0 against, B=favor to spend
+    SetStatAccess,   // A=recipient, B=StatAccess mask
+    SetEmbargo,      // A=target, B=0 lift / 1 impose
+    CancelAlliance,  // A=target
+    StartEspionage,  // A=target
+    WithdrawProposal,// A=proposal id
+    RespondDefense,  // A=call id, B=0 decline / 1 accept
+    SandboxResources = 240, SandboxSpawn = 241, SandboxReveal = 242,
 }
 
 public enum EventKind : byte
@@ -55,7 +62,7 @@ public enum EventKind : byte
     Ranged,          // A=from tile, B=target tile, C=attacker owner, D=target owner, S="1" if the target died
 }
 
-public enum ProposalKind : byte { Peace, OpenBorders }
+public enum ProposalKind : byte { Peace, OpenBorders, Alliance, Trade }
 
 public sealed class Empty : IWire { public void Sync(Wire w) { } }
 
@@ -185,6 +192,7 @@ public sealed class CityDetail : IWire
 
 public sealed class CityDto : IWire
 {
+    public int VisualEra;
     public int Id, Owner, Tile, Pop, Radius, Religion; public string Name = ""; public bool Capital, Disorder;
     /// <summary>What stands in the city. Anyone who sees the city sees its skyline: walls, temples, factories.</summary>
     public string[] Buildings = Array.Empty<string>();
@@ -192,20 +200,34 @@ public sealed class CityDto : IWire
     public void Sync(Wire w)
     {
         w.I(ref Id); w.I(ref Owner); w.I(ref Tile); w.I(ref Pop); w.I(ref Radius); w.S(ref Name);
-        w.B(ref Capital); w.B(ref Disorder); w.I(ref Religion); w.SA(ref Buildings); w.O(ref Detail);
+        w.B(ref Capital); w.B(ref Disorder); w.I(ref Religion); w.SA(ref Buildings); w.O(ref Detail); w.I(ref VisualEra);
     }
 }
 
 /// <summary>Public information about a player, as seen by the receiving player.</summary>
 public sealed class PlayerDto : IWire
 {
-    public int Id, Color, Score, Cities, Era, Techs; public string Name = "";
+    public int Id, Color;
+    public int Score = -1, Cities = -1, Era = -1, Techs = -1;
+    public string Name = "";
     public bool AI, Alive, Connected, EndedTurn, Met, Neutral, AtWar, OpenBorders;
+    public byte SharedStats, SharingStats;
+    public int Gold = -1, GoldRate;
+    public bool Allied, Embargo, Embargoed;
     public void Sync(Wire w)
     {
-        w.I(ref Id); w.I(ref Color); w.I(ref Score); w.I(ref Cities); w.I(ref Era); w.I(ref Techs); w.S(ref Name);
+        w.I(ref Id); w.I(ref Color); w.S(ref Name);
         w.B(ref AI); w.B(ref Alive); w.B(ref Connected); w.B(ref EndedTurn); w.B(ref Met); w.B(ref Neutral);
         w.B(ref AtWar); w.B(ref OpenBorders);
+        w.By(ref SharedStats); w.By(ref SharingStats);
+        w.B(ref Allied); w.B(ref Embargo); w.B(ref Embargoed);
+        var access = (StatAccess)SharedStats;
+        if ((access & StatAccess.Economy) != 0) { w.I(ref Gold); w.I(ref GoldRate); }
+        else if (!w.Writing) { Gold = -1; GoldRate = 0; }
+        if ((access & StatAccess.Development) != 0) { w.I(ref Era); w.I(ref Techs); }
+        else if (!w.Writing) { Era = -1; Techs = -1; }
+        if ((access & StatAccess.Territory) != 0) { w.I(ref Cities); w.I(ref Score); }
+        else if (!w.Writing) { Cities = -1; Score = -1; }
     }
 }
 
@@ -217,14 +239,20 @@ public sealed class ReligionDto : IWire
 
 public sealed class ProposalDto : IWire
 {
-    public int Id, From, To; public byte Kind;
-    public void Sync(Wire w) { w.I(ref Id); w.I(ref From); w.I(ref To); w.By(ref Kind); }
+    public int Id, From, To, Expires; public byte Kind;
+    public TradeSide Offered = new(), Requested = new();
+    public void Sync(Wire w)
+    {
+        w.I(ref Id); w.I(ref From); w.I(ref To); w.By(ref Kind); w.I(ref Expires);
+        Offered.Sync(w); Requested.Sync(w);
+    }
 }
 
 public sealed class DemoDto : IWire
 {
     public string Key = ""; public int Mine, Best, Avg, Worst, Rank;
-    public void Sync(Wire w) { w.S(ref Key); w.I(ref Mine); w.I(ref Best); w.I(ref Avg); w.I(ref Worst); w.I(ref Rank); }
+    public int Peers;
+    public void Sync(Wire w) { w.S(ref Key); w.I(ref Mine); w.I(ref Best); w.I(ref Avg); w.I(ref Worst); w.I(ref Rank); w.I(ref Peers); }
 }
 
 public sealed class TechCostDto : IWire
@@ -270,6 +298,9 @@ public sealed class MeDto : IWire
     public float Itr, Pressure, Lag, SciMult = 1, CulMult = 1, UpkeepMult = 1, Sprawl;
     public TechCostDto[] Available = Array.Empty<TechCostDto>();
     public ProposalDto[] Proposals = Array.Empty<ProposalDto>();
+    public LuxuryAgreementDto[] LuxuryAgreements = Array.Empty<LuxuryAgreementDto>();
+    public DefenseCallDto[] DefenseCalls = Array.Empty<DefenseCallDto>();
+    public EspionageDto[] Espionage = Array.Empty<EspionageDto>();
     public DemoDto[] Demo = Array.Empty<DemoDto>();
     public void Sync(Wire w)
     {
@@ -278,6 +309,7 @@ public sealed class MeDto : IWire
         w.S(ref Research); w.SA(ref Known); w.IA(ref Future);
         w.F(ref Itr); w.F(ref Pressure); w.F(ref Lag); w.F(ref SciMult); w.F(ref CulMult); w.F(ref UpkeepMult); w.F(ref Sprawl);
         w.A(ref Available); w.A(ref Proposals); w.A(ref Demo);
+        w.A(ref LuxuryAgreements); w.A(ref DefenseCalls); w.A(ref Espionage);
         w.I(ref Faith); w.I(ref FaithRate); w.I(ref Favor); w.I(ref FavorRate); w.I(ref Luxuries); w.I(ref Chair); w.I(ref CongressIn);
         w.IA(ref Resources); w.IA(ref Votes);
         w.S(ref Civic); w.SA(ref Civics); w.I(ref CivicProgress); w.I(ref CivicLevel); w.I(ref CultureRate); w.I(ref MyReligion);

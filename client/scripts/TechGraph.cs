@@ -51,7 +51,8 @@ public partial class TechGraph : Control
             .ToDictionary(c => c.Id, c => sent.GetValueOrDefault(c.Id) ?? new TechCostDto { Id = c.Id, Cost = c.Cost, BaseCost = c.Cost });
         return new TechGraph(Rules.Civics.Select(Conv).ToList(), new List<TechDef> { Conv(Rules.Civic($"cf_{me.CivicLevel + 1}")!) },
             new HashSet<string>(me.Civics), avail, me.Civic, me.CultureRate, me.CivicProgress, "культуры",
-            id => Rules.Civic(id) is { } c ? Conv(c) : null, t => Rules.Civic(t.Id)?.Effect.Describe() ?? "", adopt);
+            id => Rules.Civic(id) is { } c ? Conv(c) : null,
+            t => (Rules.Civic(t.Id)?.Effect.Describe() ?? "") + (t.Id == Rules.ReligionCivic ? "\nОткрывает религию и шаманство" : ""), adopt);
     }
 
     /// <summary>A custom (mod) branch. Requirements from other trees are not drawn as nodes; they show in the node text.</summary>

@@ -22,6 +22,9 @@ public sealed partial class Game
         Grid = new HexGrid(S.W, S.H);
         _at = new List<Unit>[Grid.Count];
         foreach (var u in S.Units.Values) (_at[u.Tile] ??= new List<Unit>()).Add(u);
+        MigrateUnitStacks();
+        foreach (var proposal in S.Proposals.Where(x => x.Expires == 0))
+            proposal.Expires = S.Turn + ProposalTurns;
     }
 
     public static Game Create(GameSettings settings, IList<(string name, bool ai)> players, BalanceConfig? balance = null)
@@ -82,6 +85,9 @@ public sealed partial class Game
     public IEnumerable<Unit> UnitsOf(int pid) => S.Units.Values.Where(u => u.Owner == pid);
     public IEnumerable<City> CitiesOf(int pid) => S.Cities.Values.Where(c => c.Owner == pid);
     public List<Unit> At(int tile) => _at[tile] ?? NoUnits;
+    public bool HasUnitSpace(int owner, int tile, int count = 1)
+        => Grid.Valid(tile) && count >= 0 && At(tile).Count <= Rules.MaxUnitsPerTile - count
+            && At(tile).All(u => u.Owner == owner);
     public City? CityAt(int tile) => S.Tiles[tile].CityId >= 0 ? S.Cities[S.Tiles[tile].CityId] : null;
 
     public int Rand(int n)
@@ -160,11 +166,14 @@ public sealed partial class Game
     public int StateReligion(int pid) => CitiesOf(pid).FirstOrDefault(c => c.Capital)?.Religion ?? 0;
     public bool SameFaith(int a, int b) => StateReligion(a) is var r && r != 0 && r == StateReligion(b);
     public Religion? FoundedBy(int pid) => S.Religions.FirstOrDefault(r => r.Founder == pid);
+    public bool BranchUnlocked(Player p, Rules.BranchDef branch)
+        => Rules.BranchUnlocked(branch, Knows(p, Rules.ReligionCivic), p.Nodes, p.BranchCurrent.GetValueOrDefault(branch.Id));
     public bool IsMilitary(Unit u) => u.Def.Role == UnitRole.Military;
     public double Power(int pid) => UnitsOf(pid).Where(IsMilitary).Sum(u => UnitStr(u) * u.Hp / 100.0);
 
     public Unit AddUnit(int owner, int type, int tile)
     {
+        if (!HasUnitSpace(owner, tile)) throw new InvalidOperationException("На клетке нет места для этого юнита");
         var u = new Unit { Id = S.NextId++, Owner = owner, Type = type, Tile = tile };
         u.Moves = u.MaxMoves;
         S.Units[u.Id] = u;
@@ -180,6 +189,8 @@ public sealed partial class Game
 
     private void Relocate(Unit u, int to)
     {
+        if (u.Tile == to) return;
+        if (!HasUnitSpace(u.Owner, to)) throw new InvalidOperationException("На клетке нет места для этого юнита");
         _at[u.Tile]?.Remove(u);
         u.Tile = to;
         (_at[to] ??= new List<Unit>()).Add(u);
@@ -196,7 +207,7 @@ public sealed partial class Game
         var p = S.Players[pid];
         if (!p.Alive || p.Neutral) return "Ваша цивилизация уничтожена";
         var kind = c.Kind;
-        if (kind != CmdType.Respond)
+        if (kind is not (CmdType.Respond or CmdType.RespondDefense or CmdType.SetStatAccess or CmdType.WithdrawProposal))
         {
             if (!S.Settings.Simultaneous && S.CurrentPlayer != pid) return "Сейчас не ваш ход";
             if (S.Settings.Simultaneous && p.EndedTurn) return "Вы уже завершили ход";
@@ -235,6 +246,7 @@ public sealed partial class Game
                 var branch = node == null ? null : Rules.BranchOf(node.Id);
                 if (node == null || branch == null) return "Нет такого узла";
                 if (p.Nodes.Contains(node.Id)) return "Уже освоено";
+                if (!BranchUnlocked(p, branch)) return "Сначала примите институт «Обряды предков»";
                 var missing = node.Requires.Where(r => !Knows(p, r)).ToList();
                 if (missing.Count > 0) return "Сначала нужно: " + string.Join(", ", missing.Select(Rules.RequirementName));
                 p.BranchCurrent[branch.Id] = node.Id; return null;
@@ -267,8 +279,14 @@ public sealed partial class Game
                 if (c.A < 0 || c.A > 100) return "Недопустимое значение";
                 p.Slider = c.A / 10 * 10; return null;
             case CmdType.DeclareWar: return CmdDeclareWar(p, c.A);
-            case CmdType.Propose: return CmdPropose(p, c.A, (ProposalKind)c.B);
+            case CmdType.Propose: return CmdPropose(p, c.A, c.B, c.S);
             case CmdType.Respond: return CmdRespond(p, c.A, c.B != 0);
+            case CmdType.SetStatAccess: return CmdSetStatAccess(p, c.A, c.B);
+            case CmdType.SetEmbargo: return CmdSetEmbargo(p, c.A, c.B);
+            case CmdType.CancelAlliance: return CmdCancelAlliance(p, c.A);
+            case CmdType.StartEspionage: return CmdEspionage(p, c.A);
+            case CmdType.WithdrawProposal: return CmdWithdrawProposal(p, c.A);
+            case CmdType.RespondDefense: return CmdRespondDefense(p, c.A, c.B != 0);
             case CmdType.CancelBorders:
             {
                 if (c.A < 0 || c.A >= S.Players.Count || c.A == pid) return "Неизвестный игрок";
@@ -303,11 +321,12 @@ public sealed partial class Game
         {
             int c = Rules.MoveCost(S.Tiles[from], S.Tiles[to], mover);
             if (c < 0 || !CanEnter(u, to)) return -1;
+            var units = At(to);
+            if (to != u.Tile && units.Count >= Rules.MaxUnitsPerTile && units[0].Owner == u.Owner) return -1;
             if (to != target)
             {
                 var city = CityAt(to);
                 if (city != null && city.Owner != u.Owner) return -1;
-                var units = At(to);
                 for (int i = 0; i < units.Count; i++) if (units[i].Owner != u.Owner) return -1;
             }
             return c;
@@ -327,6 +346,8 @@ public sealed partial class Game
             var foes = At(target).Where(x => x.Owner != u.Owner && AtWar(u.Owner, x.Owner)).ToList();
             if (foes.Count > 0) { RangedAttack(u, target, foes); return null; }
         }
+        if (At(target).Count >= Rules.MaxUnitsPerTile && At(target)[0].Owner == p.Id)
+            return "На клетке уже три ваших юнита";
         if (PathFor(u, target) == null) return "Туда нет пути";
         u.Goto = target; u.Fortified = false; u.Work = WorkKind.None; u.WorkTurns = 0;
         ContinueGoto(u);
@@ -351,6 +372,7 @@ public sealed partial class Game
         int from = u.Tile;
         int cost = Rules.MoveCost(S.Tiles[from], S.Tiles[to], MoverOf(u));
         if (cost < 0 || !CanEnter(u, to)) return false;
+        if (At(to).Count >= Rules.MaxUnitsPerTile && At(to)[0].Owner == u.Owner) return false;
         var others = At(to).Where(x => x.Owner != u.Owner).ToList();
         var city = CityAt(to);
         bool military = IsMilitary(u);
@@ -371,16 +393,32 @@ public sealed partial class Game
     private void Advance(Unit u, int to, int cost)
     {
         int from = u.Tile;
-        foreach (var civ in At(to).Where(x => x.Owner != u.Owner).ToList())
+        var foreign = At(to).Where(x => x.Owner != u.Owner).OrderBy(x => x.Id).ToArray();
+        var formerOwners = foreign.Select(x => x.Owner).Distinct().ToArray();
+        int captureSlots = Rules.MaxUnitsPerTile - (At(to).Count - foreign.Length) - 1;
+        foreach (var civ in foreign)
         {
-            int oldOwner = civ.Owner;
             if (civ.Def.Role == UnitRole.Worker || civ.Def.Role == UnitRole.Settler)
             {
                 civ.Owner = u.Owner; civ.Type = Rules.UnitIndex("worker");
                 civ.Moves = 0; civ.Goto = -1; civ.Work = WorkKind.None; civ.WorkTurns = 0;
+                if (captureSlots > 0 && FitsTile(civ.Owner, civ.Type, civ.Tile)) captureSlots--;
+                else
+                {
+                    int refuge = NearestTiles(to).FirstOrDefault(tile => CanSpawnUnit(civ.Owner, civ.Type, tile), -1);
+                    if (refuge >= 0)
+                    {
+                        Relocate(civ, refuge);
+                        Emit(EventKind.UnitMoved, civ.Id, to, refuge, tiles: new[] { to, refuge });
+                    }
+                    else
+                    {
+                        RemoveUnit(civ);
+                        Emit(EventKind.Info, s: "Пленника некуда разместить", only: u.Owner);
+                    }
+                }
             }
             else RemoveUnit(civ);
-            CheckDefeat(oldOwner);
         }
         Relocate(u, to);
         u.Moves = Math.Max(0, u.Moves - cost);
@@ -388,6 +426,7 @@ public sealed partial class Game
         Emit(EventKind.UnitMoved, u.Id, from, to, tiles: new[] { from, to });
         var city = CityAt(to);
         if (city != null && city.Owner != u.Owner) { u.Moves = 0; TransferCity(city, u.Owner, true); }
+        foreach (int owner in formerOwners) CheckDefeat(owner);
     }
 
     public double DefenseStr(Unit d)
@@ -535,6 +574,7 @@ public sealed partial class Game
         var city = OwnCity(p, cityId, out var err); if (city == null) return err;
         if (city.DisorderTurns > 0) return "В городе беспорядки";
         if (city.Queue.Count == 0 || city.Queue[0] == Rules.Wealth) return "Нечего покупать";
+        if (city.Queue[0].StartsWith("u:") && !HasUnitSpace(p.Id, city.Tile)) return "В городе нет места для нового юнита";
         int cost = Rules.ItemCost(city.Queue[0]);
         int price = Rules.BuyPrice(cost, city.Prod);
         if (price <= 0) return "Уже оплачено";
@@ -565,6 +605,7 @@ public sealed partial class Game
         if (city.DisorderTurns > 0) return "В городе беспорядки";
         if (city.Queue.Count == 0 || city.Queue[0] == Rules.Wealth) return "Нечего покупать";
         string item = city.Queue[0];
+        if (item.StartsWith("u:") && !HasUnitSpace(p.Id, city.Tile)) return "В городе нет места для нового юнита";
         if (item.StartsWith("u:") && Rules.Units[Rules.UnitIndex(item[2..])].Role == UnitRole.Military)
             return "За веру покупаются только здания и мирные юниты";
         int cost = Rules.ItemCost(item);
@@ -597,16 +638,17 @@ public sealed partial class Game
         if (target < 0 || target >= S.Players.Count || target == p.Id) return "Неизвестный игрок";
         var q = P(target);
         if (!q.Alive || q.Neutral || !Rel(p.Id, target).Met) return "С этой цивилизацией нет контакта";
+        if (!CanTrade(p, q)) return "Подарки недоступны во время войны или эмбарго";
         if (amount <= 0) return "Недопустимая сумма";
         if (kind == 0)
         {
-            if (p.Gold < amount) return "Недостаточно золота";
+            if (p.Gold < amount || (long)q.Gold + amount > int.MaxValue) return "Недопустимая сумма золота";
             p.Gold -= amount; q.Gold += amount;
             Emit(EventKind.Info, s: $"«{p.Name}» передаёт вам {amount} золота", only: target);
         }
         else if (kind == 1)
         {
-            if (p.Favor < amount) return "Недостаточно дипломатического одобрения";
+            if (p.Favor < amount || (long)q.Favor + amount > int.MaxValue) return "Недопустимая сумма одобрения";
             p.Favor -= amount; q.Favor += amount;
             Emit(EventKind.Info, s: $"«{p.Name}» передаёт вам {amount} дипломатического одобрения", only: target);
         }
@@ -631,6 +673,7 @@ public sealed partial class Game
         var a = Rules.Action(id);
         if (a == null) return "Нет такого действия";
         var branch = Rules.BranchOfAction(a.Id);
+        if (branch != null && !BranchUnlocked(p, branch)) return "Сначала примите институт «Обряды предков»";
         if (!p.Has(a.Requires)) return "Сначала нужно: " + Rules.RequirementName(a.Requires);
         int wait = p.Cooldowns.GetValueOrDefault(a.Id) - S.Turn;
         if (wait > 0) return $"«{a.Name}» можно повторить через {wait} х.";
@@ -734,7 +777,8 @@ public sealed partial class Game
                 var tile = S.Tiles[spot];
                 bool fits = def.X.Flying || (def.Sea ? tile.IsWater : tile.Passable);
                 if (!fits) return "Здесь призванный юнит не сможет находиться";
-                if (At(spot).Any(u => u.Owner != p.Id) || (CityAt(spot) is { } there && there.Owner != p.Id)) return "Клетка занята чужими силами";
+                if (!HasUnitSpace(p.Id, spot) || (CityAt(spot) is { } there && there.Owner != p.Id))
+                    return "На клетке нет места для призванного юнита";
                 var summoned = AddUnit(p.Id, type, spot);
                 summoned.Moves = 0;
                 if (a.Duration > 0) summoned.Expires = S.Turn + a.Duration;
@@ -765,7 +809,9 @@ public sealed partial class Game
                 if (caster == null || city == null) return "Телепорту нужны заклинатель и ваш город";
                 if (caster.Tile == city.Tile) return "Заклинатель уже в этом городе";
                 int from = caster.Tile;
-                foreach (var u in At(from).Where(u => u.Owner == p.Id).ToList())
+                var stack = At(from).Where(u => u.Owner == p.Id).ToList();
+                if (!HasUnitSpace(p.Id, city.Tile, stack.Count)) return "В городе нет места для всех юнитов";
+                foreach (var u in stack)
                 {
                     Relocate(u, city.Tile);
                     u.Moves = 0; u.Goto = -1; u.Fortified = false;
@@ -786,6 +832,7 @@ public sealed partial class Game
     private string? CmdFoundReligion(Player p, int nameIdx, int belief)
     {
         if (FoundedBy(p.Id) != null) return "Вы уже основали религию";
+        if (!Knows(p, Rules.ReligionCivic)) return "Сначала примите институт «Обряды предков»";
         var holy = CitiesOf(p.Id).FirstOrDefault(c => c.Capital);
         if (holy == null) return "Для основания религии нужна столица";
         if (nameIdx < 0 || nameIdx >= Rules.ReligionNames.Length || belief < 0 || belief >= Rules.Beliefs.Length) return "Неверный выбор";
@@ -806,8 +853,11 @@ public sealed partial class Game
     {
         var city = OwnCity(p, cityId, out var err); if (city == null) return err;
         int rel = FoundedBy(p.Id)?.Id ?? city.Religion;
+        if (!Knows(p, Rules.ReligionCivic) && FoundedBy(p.Id) == null)
+            return "Сначала примите институт «Обряды предков»";
         if (rel == 0) return "В этом городе нет религии, которую мог бы нести миссионер";
         if (p.Faith < Rules.MissionaryFaith) return $"Недостаточно веры (нужно {Rules.MissionaryFaith})";
+        if (!HasUnitSpace(p.Id, city.Tile)) return "В городе нет места для миссионера";
         p.Faith -= Rules.MissionaryFaith;
         var u = AddUnit(p.Id, Rules.UnitIndex("missionary"), city.Tile);
         u.Religion = rel; u.Moves = 0;
@@ -910,6 +960,7 @@ public sealed partial class Game
         p.Alive = false;
         foreach (var u in UnitsOf(pid).ToList()) RemoveUnit(u);
         S.Proposals.RemoveAll(x => x.From == pid || x.To == pid);
+        RemoveDiplomacyForDefeated(pid);
         Emit(EventKind.PlayerDefeated, pid);
     }
 
@@ -932,69 +983,7 @@ public sealed partial class Game
         foreach (var c in S.Cities.Values.OrderBy(c => c.Id))
             foreach (int t in c.ExtraTiles)
                 if (S.Tiles[t].Owner < 0) S.Tiles[t].Owner = c.Owner;
+        S.LuxuryAgreements.RemoveAll(x => !ValidLuxuryAgreement(x));
     }
 
-    // ---------------------------------------------------------- diplomacy
-    private string? CmdDeclareWar(Player p, int target)
-    {
-        if (target < 0 || target >= S.Players.Count || target == p.Id) return "Неизвестный игрок";
-        var q = P(target);
-        if (!q.Alive || q.Neutral) return "Этой цивилизации нельзя объявить войну";
-        var rel = Rel(p.Id, target);
-        if (!rel.Met) return "Вы ещё не встретили эту цивилизацию";
-        if (rel.AtWar) return "Вы уже воюете";
-        rel.AtWar = true; rel.OpenBorders = false; rel.SinceTurn = S.Turn;
-        S.Proposals.RemoveAll(x => (x.From == p.Id && x.To == target) || (x.From == target && x.To == p.Id));
-        Emit(EventKind.WarDeclared, p.Id, target);
-        return null;
-    }
-
-    private string? CmdPropose(Player p, int target, ProposalKind kind)
-    {
-        if (target < 0 || target >= S.Players.Count || target == p.Id) return "Неизвестный игрок";
-        var q = P(target);
-        if (!q.Alive || q.Neutral) return "С этой цивилизацией нельзя договориться";
-        var rel = Rel(p.Id, target);
-        if (!rel.Met) return "Вы ещё не встретили эту цивилизацию";
-        if (kind == ProposalKind.Peace && !rel.AtWar) return "Вы не воюете";
-        if (kind == ProposalKind.OpenBorders && (rel.AtWar || rel.OpenBorders)) return "Сейчас это невозможно";
-        if (kind > ProposalKind.OpenBorders) return "Неизвестное предложение";
-        if (S.Proposals.Any(x => x.From == p.Id && x.To == target && x.Kind == kind)) return "Предложение уже отправлено";
-        var pr = new Proposal { Id = S.NextId++, From = p.Id, To = target, Kind = kind };
-        if (q.IsAI)
-        {
-            if (SimpleAI.Accepts(this, q, pr)) ApplyProposal(pr);
-            else Emit(EventKind.Info, s: $"«{q.Name}» отклоняет ваше предложение", only: p.Id);
-            return null;
-        }
-        S.Proposals.Add(pr);
-        Emit(EventKind.Proposal, p.Id, (int)kind, only: target);
-        return null;
-    }
-
-    private string? CmdRespond(Player p, int proposalId, bool accept)
-    {
-        var pr = S.Proposals.FirstOrDefault(x => x.Id == proposalId && x.To == p.Id);
-        if (pr == null) return "Предложение уже неактуально";
-        S.Proposals.Remove(pr);
-        if (accept) ApplyProposal(pr);
-        else Emit(EventKind.Info, s: $"«{p.Name}» отклоняет ваше предложение", only: pr.From);
-        return null;
-    }
-
-    private void ApplyProposal(Proposal pr)
-    {
-        var rel = Rel(pr.From, pr.To);
-        if (pr.Kind == ProposalKind.Peace)
-        {
-            if (!rel.AtWar) return;
-            rel.AtWar = false; rel.SinceTurn = S.Turn;
-            Emit(EventKind.PeaceMade, pr.From, pr.To);
-        }
-        else if (!rel.AtWar && !rel.OpenBorders)
-        {
-            rel.OpenBorders = true;
-            Emit(EventKind.BordersOpened, pr.From, pr.To);
-        }
-    }
 }

@@ -74,6 +74,9 @@ public sealed class Player
     public long TechPoints;
     public double SciFrac;
     public int Faith, Favor, Luxuries;
+    public Dictionary<int, StatAccess> StatGrants = new();
+    public HashSet<int> Embargoes = new();
+    public List<EspionageDto> Espionage = new();
     // social institutions
     public HashSet<string> Civics = new();
     public string? Civic;
@@ -120,8 +123,18 @@ public sealed class Player
 
 public sealed class CityBuff { public string Stat = ""; public int Amount, Until; }
 public sealed class Religion { public int Id, Founder, Belief, HolyCity; public string Name = ""; }
-public sealed class Relation { public bool AtWar, OpenBorders, Met; public int SinceTurn; }
-public sealed class Proposal { public int Id, From, To; public ProposalKind Kind; }
+public sealed class Relation { public bool AtWar, OpenBorders, Met, Allied; public int SinceTurn; }
+public sealed class Proposal
+{
+    public int Id, From, To, Expires;
+    public ProposalKind Kind;
+    public TradeSide Offered = new(), Requested = new();
+}
+
+public sealed class DefenseCall
+{
+    public int Id, Recipient, Ally, Aggressor, Expires;
+}
 
 public sealed class GameState
 {
@@ -135,6 +148,8 @@ public sealed class GameState
     public List<Player> Players = new();
     public Dictionary<int, Relation> Relations = new();
     public List<Proposal> Proposals = new();
+    public List<LuxuryAgreementDto> LuxuryAgreements = new();
+    public List<DefenseCall> DefenseCalls = new();
     /// <summary>World congress: favor spent per candidate this session, and the current chair.</summary>
     public Dictionary<int, int> Votes = new();
     public int Chair = -1;

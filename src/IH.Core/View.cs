@@ -17,7 +17,7 @@ public sealed partial class Game
     public bool[] UpdateVisibility(Player p)
     {
         var vis = new bool[S.Tiles.Length];
-        if (!p.Alive && !p.Neutral) Array.Fill(vis, true); // defeated players spectate
+        if (_sandboxReveal.Contains(p.Id) || (!p.Alive && !p.Neutral)) Array.Fill(vis, true);
         else
         {
             foreach (var u in UnitsOf(p.Id))
@@ -60,6 +60,7 @@ public sealed partial class Game
     {
         Id = c.Id, Owner = c.Owner, Tile = c.Tile, Pop = c.Pop, Radius = c.Radius, Name = c.Name,
         Capital = c.Capital, Disorder = c.DisorderTurns > 0, Religion = c.Religion,
+        VisualEra = Rules.EraOf(P(c.Owner).Known, P(c.Owner).Future),
         Buildings = c.Buildings.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
     };
 
@@ -115,7 +116,7 @@ public sealed partial class Game
         {
             if (!view.Visible[u.Tile]) continue;
             // stealth: a hidden enemy is reported only to players who have something right next to it
-            if (u.Owner != pid && u.Def.X.Stealth && p.Alive && !Spotted(u, pid)) continue;
+            if (u.Owner != pid && u.Def.X.Stealth && p.Alive && !_sandboxReveal.Contains(pid) && !Spotted(u, pid)) continue;
             view.Units.Add(ToDto(u, u.Owner == pid));
         }
 
@@ -123,13 +124,21 @@ public sealed partial class Game
         {
             var rel = o.Id == pid ? null : Rel(pid, o.Id);
             bool met = o.Id == pid || rel!.Met || !p.Alive;
+            var access = GrantedBy(o, p);
+            bool economy = access.HasFlag(StatAccess.Economy);
+            bool development = access.HasFlag(StatAccess.Development);
+            bool territory = access.HasFlag(StatAccess.Territory);
+            if (economy && o.Id != pid) RefreshEconomy(o);
             return new PlayerDto
             {
                 // a civilisation nobody has met yet stays anonymous
                 Id = o.Id, Name = met || o.Neutral ? o.Name : "Неизвестная цивилизация", Color = o.Color, AI = o.IsAI, Alive = o.Alive, Neutral = o.Neutral,
                 Connected = o.Connected, EndedTurn = o.EndedTurn, Met = met,
-                Score = met && !o.Neutral ? Score(o) : 0, Cities = met ? CitiesOf(o.Id).Count() : 0,
-                Era = met ? Rules.EraOf(o.Known, o.Future) : 0, Techs = met ? o.TechCount : 0,
+                SharedStats = (byte)access, SharingStats = (byte)GrantedBy(p, o),
+                Score = territory ? Score(o) : -1, Cities = territory ? CitiesOf(o.Id).Count() : -1,
+                Era = development ? Rules.EraOf(o.Known, o.Future) : -1, Techs = development ? o.TechCount : -1,
+                Gold = economy ? o.Gold : -1, GoldRate = economy ? o.GoldRate : 0,
+                Allied = rel?.Allied == true, Embargo = p.Embargoes.Contains(o.Id), Embargoed = o.Embargoes.Contains(pid),
                 AtWar = o.Id != pid && AtWar(pid, o.Id), OpenBorders = rel != null && rel.OpenBorders,
             };
         }).ToArray();
@@ -146,8 +155,15 @@ public sealed partial class Game
             CulMult = (float)p.CulMult, UpkeepMult = (float)p.UpkeepMult, Sprawl = (float)p.Sprawl,
             Available = Rules.AvailableTechs(p.Known, p.Future)
                 .Select(t => new TechCostDto { Id = t.Id, BaseCost = t.Cost, Cost = AntiSnowball.TechCost(this, p, t) }).ToArray(),
-            Proposals = S.Proposals.Where(x => x.To == pid || x.From == pid)
-                .Select(x => new ProposalDto { Id = x.Id, From = x.From, To = x.To, Kind = (byte)x.Kind }).ToArray(),
+            Proposals = S.Proposals.Where(x => x.Expires > S.Turn && (x.To == pid || x.From == pid))
+                .Select(x => new ProposalDto { Id = x.Id, From = x.From, To = x.To, Kind = (byte)x.Kind, Expires = x.Expires,
+                    Offered = x.Offered, Requested = x.Requested }).ToArray(),
+            LuxuryAgreements = S.LuxuryAgreements.Where(x => (x.To == pid || x.From == pid) && ValidLuxuryAgreement(x)).ToArray(),
+            DefenseCalls = S.DefenseCalls.Where(x => x.Recipient == pid && ValidDefenseCall(x))
+                .Select(x => new DefenseCallDto { Id = x.Id, Ally = x.Ally, Aggressor = x.Aggressor, Expires = x.Expires,
+                    AggressorName = P(x.Aggressor).Name }).ToArray(),
+            Espionage = p.Espionage.Select(x => new EspionageDto { Target = x.Target, Completes = x.Completes, Observed = x.Observed,
+                Expires = x.Expires, Gold = x.Gold, GoldRate = x.GoldRate, Era = x.Era, Techs = x.Techs }).ToArray(),
             Demo = Demographics(p),
             Nodes = p.Nodes.OrderBy(x => x).ToArray(),
             CivicCosts = Rules.AvailableCivics(p.Civics, p.CivicLevel)
@@ -184,21 +200,26 @@ public sealed partial class Game
         if (!active.Contains(me)) return Array.Empty<DemoDto>();
         var land = new int[S.Players.Count];
         for (int i = 0; i < S.Tiles.Length; i++) if (S.Tiles[i].Owner >= 0) land[S.Tiles[i].Owner]++;
-        DemoDto Row(string key, Func<Player, double> f)
+        DemoDto Row(string key, Func<Player, double> f, StatAccess category = StatAccess.None)
         {
-            var vals = active.Select(f).ToList();
+            var values = active.Where(p => p.Id != me.Id && category != StatAccess.None && GrantedBy(p, me).HasFlag(category))
+                .Select(f).ToList();
             double mine = f(me);
+            int peers = values.Count;
+            if (peers == 0) return new DemoDto { Key = key, Mine = (int)Math.Round(mine) };
+            values.Add(mine);
             return new DemoDto
             {
-                Key = key, Mine = (int)Math.Round(mine), Best = (int)Math.Round(vals.Max()), Worst = (int)Math.Round(vals.Min()),
-                Avg = (int)Math.Round(vals.Average()), Rank = 1 + vals.Count(v => v > mine),
+                Key = key, Mine = (int)Math.Round(mine), Best = (int)Math.Round(values.Max()), Worst = (int)Math.Round(values.Min()),
+                Avg = (int)Math.Round(values.Average()), Rank = 1 + values.Count(v => v > mine), Peers = peers,
             };
         }
         return new[]
         {
             Row("Наука за ход", p => p.SciRate + p.EchoBonus),
             Row("Уровень науки", p => p.ScienceLevel),
-            Row("Доход золота", p => p.GoldRate),
+            Row("Доход золота", p => p.GoldRate, StatAccess.Economy),
+            Row("Городов", p => CitiesOf(p.Id).Count(), StatAccess.Territory),
             Row("Производство", p => CitiesOf(p.Id).Sum(c => c.ProdRate)),
             Row("Население", p => CitiesOf(p.Id).Sum(c => c.Pop)),
             Row("Территория", p => land[p.Id]),

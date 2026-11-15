@@ -41,13 +41,13 @@ public partial class GameScreen : Control
     private readonly LineEdit _chat = new() { PlaceholderText = "Сообщение всем (Enter — отправить)" };
     // ---- advisor window and the city panel
     private readonly ColorRect _backdrop = new() { Color = new Color(0.02f, 0.03f, 0.06f, 0.6f), MouseFilter = MouseFilterEnum.Stop, Visible = false };
-    private readonly PanelContainer _window = Ui.Panel(16, Ui.Col(0x10172A, 0.99f), Ui.PanelEdge, 10);
+    private readonly PanelContainer _window = Ui.Panel(16, new Color(Ui.PanelBg, 0.99f), Ui.Line, 12);
     private readonly Label _windowTitle = Ui.Lbl("", 20, Ui.Gold, true), _cityTitle = Ui.Lbl("", 18, Ui.Gold, true);
     private readonly Icon _windowIcon = new(Ico.None, Ui.Gold, 22);
     private readonly HBoxContainer _windowTabs = Ui.H(4);
     private readonly VBoxContainer _windowBody = Ui.V(6), _cityBody = Ui.V(6);
     private readonly ScrollContainer _windowScroll = new(), _cityScroll = new() { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
-    private readonly PanelContainer _cityDock = Ui.Panel(12, Ui.Col(0x10172A, 0.97f), Ui.PanelEdge, 10);
+    private readonly PanelContainer _cityDock = Ui.Panel(12, Ui.PanelBg, Ui.Line, 12);
     private VBoxContainer _body = null!;
     private float _bodyW = 780;
 
@@ -68,10 +68,10 @@ public partial class GameScreen : Control
     {
         (Win.Science, "Наука", Ico.Science, Ui.Science, "F6", "Дерево технологий"),
         (Win.Civics, "Культура", Ico.Culture, Ui.Culture, "F7", "Социальные институты"),
-        (Win.Branches, "Ветки", Ico.Branch, Ui.Power, "F10", "Особые ветки развития: магия, шаманство и ваши собственные"),
-        (Win.Religion, "Религия", Ico.Faith, Ui.Faith, "F8", "Вера, религии мира и миссионеры"),
+        (Win.Branches, "Ветки", Ico.Branch, Ui.Power, "F10", "Магия и особые ветки развития из модов"),
+        (Win.Religion, "Религия", Ico.Faith, Ui.Faith, "F8", "Религии, миссионеры и шаманство. Открывают Обряды предков"),
         (Win.Economy, "Экономика", Ico.Gold, Ui.Gold, "F2", "Казна, содержание и ваше положение в системе «Анти-Сноуболл»"),
-        (Win.Diplomacy, "Дипломатия", Ico.Favor, Ui.Favor, "F4", "Державы, договоры и Всемирный конгресс"),
+        (Win.Diplomacy, "Державы", Ico.Favor, Ui.Favor, "F4", "Сделки, договоры, разведка и Всемирный конгресс"),
         (Win.Demographics, "Рейтинг", Ico.Chart, Ui.Good, "F9", "Демография, рейтинг держав и мировые достижения"),
         (Win.Help, "Справка", Ico.Help, Ui.Dim, "F1", "Управление и краткие правила"),
     };
@@ -94,6 +94,7 @@ public partial class GameScreen : Control
         BuildBottom(out _endTurn);
         BuildOverlay();
         BuildWindows();
+        BuildDiagnostics();
 
         Resized += FitWindow;
         HoverChanged(-1);
@@ -104,9 +105,9 @@ public partial class GameScreen : Control
     private void BuildTopBar()
     {
         var top = new PanelContainer { MouseFilter = MouseFilterEnum.Stop };
-        var style = Ui.Box(Ui.Col(0x0C1220, 0.97f), null, 0, 12, 6);
+        var style = Ui.Box(new Color(Ui.Bg, 0.97f), null, 0, 12, 6);
         style.BorderWidthBottom = 1;
-        style.BorderColor = Ui.Col(0x8C7A45, 0.7f);
+        style.BorderColor = new Color(Ui.PanelEdge, 0.65f);
         top.AddThemeStyleboxOverride("panel", style);
         top.CustomMinimumSize = new Vector2(0, TopH);
 
@@ -130,7 +131,7 @@ public partial class GameScreen : Control
         _itr.AddChild(itrRow);
         _itr.GuiInput += e => { if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left }) Toggle(Win.Economy, true); };
 
-        _leave = Ui.Btn("Выйти", LeavePressed, "Покинуть игру. Место сохранится — вернуться можно из списка игр под тем же именем", 13);
+        _leave = Ui.Btn("Выйти", LeavePressed, "Место сохранится. Для возврата снова подключитесь к тому же серверу с этого клиента", 13);
         var turnBox = Ui.H(7, new Icon(Ico.Turn, Ui.Gold, 15), _turn, _era);
         var row = Ui.H(14, turnBox, new VSeparator(), chips, Ui.Spacer(), _timer, _itr, _leave);
         top.AddChild(row);
@@ -142,7 +143,12 @@ public partial class GameScreen : Control
     private void LeavePressed()
     {
         double now = Time.GetTicksMsec() / 1000.0;
-        if (now < _leaveArmedUntil) { Net.Send(MsgType.LeaveGame); return; }
+        if (now < _leaveArmedUntil)
+        {
+            if (_main.InSandbox) Net.Disconnect();
+            else Net.Send(MsgType.LeaveGame);
+            return;
+        }
         _leaveArmedUntil = now + 3;
         _leave.Text = "Точно выйти?";
         _leave.ThemeTypeVariation = "Danger";
@@ -156,7 +162,7 @@ public partial class GameScreen : Control
             var win = a.win;
             nav.AddChild(Ui.RowBtn(a.title, a.key, () => Toggle(win), a.tip, a.icon, a.color));
         }
-        var navPanel = Ui.Panel(5, Ui.Col(0x10172A, 0.9f));
+        var navPanel = Ui.Panel(5, Ui.PanelBg);
         navPanel.AddChild(nav);
         var column = Ui.V(6, _trackers, navPanel);
         column.CustomMinimumSize = new Vector2(226, 0);
@@ -168,7 +174,7 @@ public partial class GameScreen : Control
 
     private void BuildLog()
     {
-        _logPanel = Ui.Panel(8, Ui.Col(0x0A0F1B, 0.74f), Ui.Col(0x2C3854, 0.5f));
+        _logPanel = Ui.Panel(8, new Color(Ui.Bg, 0.84f), new Color(Ui.Line, 0.6f));
         _logPanel.MouseFilter = MouseFilterEnum.Ignore;
         _logPanel.CustomMinimumSize = new Vector2(308, 0);
         _chat.Visible = false;
@@ -182,7 +188,9 @@ public partial class GameScreen : Control
         _log.MouseFilter = MouseFilterEnum.Ignore;
         var hint = Ui.Lbl("T — написать в чат", 11, new Color(Ui.Dim, 0.7f));
         hint.MouseFilter = MouseFilterEnum.Ignore;
-        var box = Ui.V(4, _log, _chat, hint);
+        var box = Ui.V(5);
+        BuildNationHud(box);
+        foreach (var child in new Control[] { _log, _chat, hint }) box.AddChild(child);
         box.MouseFilter = MouseFilterEnum.Ignore;
         _logPanel.AddChild(box);
         AddChild(Ui.Dock(_logPanel, SizeFlags.ShrinkEnd, SizeFlags.ShrinkBegin, 8, TopH + 8));
@@ -343,12 +351,19 @@ public partial class GameScreen : Control
         if (_win == Win.City && (!W.Cities.TryGetValue(_cityId, out var city) || city.Owner != W.MyId)) Toggle(Win.None);
         Refresh();
         RebuildWindow();
+        TeachDiplomacyAndReligion();
     }
 
     public void OnCommandResult(int seq, bool ok, string error)
     {
+        _lastDiagnosticCommand = ok ? $"#{seq} · выполнена" : $"#{seq} · {error}";
         Map.OnCommandResult(seq, ok);
-        if (!ok) { Toast(error, true); Sound.Play(Sfx.Id.Error); }
+        if (!ok)
+        {
+            Toast(error, true);
+            Sound.Play(Sfx.Id.Error);
+            if (_win == Win.Diplomacy) RebuildWindow();
+        }
     }
 
     public void Toast(string text, bool bad)
@@ -376,6 +391,7 @@ public partial class GameScreen : Control
     public override void _Process(double delta)
     {
         double now = Time.GetTicksMsec() / 1000.0;
+        UpdateDiagnostics(now);
         if (_toastPanel.Visible && now > _toastUntil) _toastPanel.Visible = false;
         if (_leaveArmedUntil > 0 && now > _leaveArmedUntil) { _leaveArmedUntil = 0; _leave.Text = "Выйти"; _leave.ThemeTypeVariation = ""; }
         string ping = Net.PingMs >= 0 ? $"пинг {Net.PingMs} мс" : "";
@@ -422,6 +438,7 @@ public partial class GameScreen : Control
             case Key.F7: Toggle(Win.Civics); break;
             case Key.F8: Toggle(Win.Religion); break;
             case Key.F10: Toggle(Win.Branches); break;
+            case Key.F12: _diagnostics.Visible = !_diagnostics.Visible; break;
             case Key.P: UnitCommand(CmdType.Preach); break;
             default: return;
         }
@@ -487,6 +504,7 @@ public partial class GameScreen : Control
 
     public void TileClicked(int tile)
     {
+        if (tile >= 0) _diagnosticTile = tile;
         if (tile < 0) return;
         if (_aiming is { } aim)
         {
@@ -516,6 +534,17 @@ public partial class GameScreen : Control
     public bool BannerClicked(Vector2 at)
     {
         if (_aiming != null) return false;
+        int unitId = Banners.UnitAt(at);
+        if (unitId >= 0 && W.Units.TryGetValue(unitId, out var unit) && unit.Owner == W.MyId)
+        {
+            _confirmDisband = -1;
+            _diagnosticTile = unit.Tile;
+            Map.Select(unitId);
+            Sound.Play(Sfx.Id.Click);
+            if (_win == Win.City) Toggle(Win.None);
+            Refresh();
+            return true;
+        }
         int id = Banners.CityAt(at);
         if (id < 0 || !W.Cities.TryGetValue(id, out var c) || c.Owner != W.MyId) return false;
         Sound.Play(Sfx.Id.Click);

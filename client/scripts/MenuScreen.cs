@@ -20,6 +20,7 @@ public partial class MenuScreen : Control
     private readonly System.Collections.Generic.List<string> _saves = LocalServer.Saves();
     private double _connectAt = -1;
     private bool _steamHostPending;
+    private int _sandboxPort;
     private readonly OptionButton _connMode = new(), _steamSave = new();
     private readonly VBoxContainer _lanBox, _steamBox, _steamGames = Ui.V(4);
     private readonly Label _steamStatus = Ui.Lbl("", 13, Ui.Dim);
@@ -63,6 +64,7 @@ public partial class MenuScreen : Control
             Ui.Lbl("Или станьте хостом — сервер запустится на этом компьютере:", 13, Ui.Dim),
             Row("Партия", _hostSave),
             Ui.Btn("Создать сервер и подключиться", HostPressed, size: 16, variation: "Primary"),
+            Ui.Btn("Локальная песочница", HostSandboxPressed, "Тестовая партия с ботами. Команды песочницы доступны по F12."),
             _hostInfo);
         var steamScroll = new ScrollContainer { CustomMinimumSize = new Vector2(0, 110) };
         steamScroll.AddChild(_steamGames);
@@ -224,11 +226,38 @@ public partial class MenuScreen : Control
         _connectAt = Time.GetTicksMsec() / 1000.0 + 1.2; // give the process a moment to open its socket
     }
 
+    public void HostSandboxPressed()
+    {
+        if (_connectAt >= 0) return;
+        if (_name.Text.Trim().Length == 0) { ShowError("Введите имя"); return; }
+        const int port = 27016;
+        string? error = LocalServer.Start(port, null, sandbox: true);
+        if (error != null) { ShowError(error); return; }
+        _sandboxPort = port;
+        _status.AddThemeColorOverride("font_color", Ui.Dim);
+        _status.Text = "Запуск локальной песочницы…";
+        _connectAt = Time.GetTicksMsec() / 1000.0 + 1.2;
+    }
+
     public override void _Process(double delta)
     {
         if (_connectAt < 0 || Time.GetTicksMsec() / 1000.0 < _connectAt) return;
         _connectAt = -1;
-        if (!LocalServer.Running) { _steamHostPending = false; ShowError("Сервер не запустился (возможно, порт занят)"); return; }
+        if (!LocalServer.Running)
+        {
+            _steamHostPending = false;
+            _sandboxPort = 0;
+            ShowError(LocalServer.ConsumeStartupError() ?? "Сервер не запустился (возможно, порт занят)");
+            return;
+        }
+        if (_sandboxPort > 0)
+        {
+            int port = _sandboxPort;
+            _sandboxPort = 0;
+            AutoHost = true;
+            _main.Connect(_name.Text.Trim(), "127.0.0.1", port, "sandbox:local");
+            return;
+        }
         if (_steamHostPending)
         {
             _steamHostPending = false;
@@ -252,9 +281,11 @@ public partial class MenuScreen : Control
     private void CreatePressed()
     {
         var size = Sizes[Mathf.Clamp(_mapSize.Selected, 0, Sizes.Length - 1)];
+        bool sandbox = _main.InSandbox;
         _main.Net.Send(MsgType.CreateGame, new GameSettings
         {
-            Name = _gameName.Text, MapW = size.w, MapH = size.h, AiCount = (int)_ai.Value, MaxPlayers = (int)_humans.Value,
+            Name = sandbox ? "Песочница" : _gameName.Text, MapW = size.w, MapH = size.h,
+            AiCount = sandbox ? 2 : (int)_ai.Value, MaxPlayers = sandbox ? 1 : (int)_humans.Value,
             Simultaneous = _mode.Selected == 0, TurnTimerSec = (int)_timer.Value, MapType = _mapType.Selected,
         });
     }
@@ -289,10 +320,19 @@ public partial class MenuScreen : Control
                 info.SizeFlagsHorizontal = SizeFlags.ExpandFill;
                 _games.AddChild(Ui.H(8, info, Ui.Btn(g.Started ? "Вернуться" : "Войти",
                     () => _main.Net.Send(MsgType.JoinGame, new IntMsg { V = id }),
-                    g.Started ? "Занять своё место в идущей игре (нужно то же имя)" : null)));
+                    g.Started ? "Занять своё место по сохранённому ключу" : null)));
             }
             if (AutoHost) { AutoHost = false; CreatePressed(); CallDeferred(nameof(AutoStart)); }
-            if (AutoJoin && net.Lobby.Games.Length > 0) { AutoJoin = false; _main.Net.Send(MsgType.JoinGame, new IntMsg { V = net.Lobby.Games[0].Id }); }
+            if (AutoJoin)
+            {
+                foreach (var game in net.Lobby.Games)
+                {
+                    if (game.Started) continue;
+                    AutoJoin = false;
+                    _main.Net.Send(MsgType.JoinGame, new IntMsg { V = game.Id });
+                    break;
+                }
+            }
         }
         if (net.State == NetState.Room && net.Room != null)
         {

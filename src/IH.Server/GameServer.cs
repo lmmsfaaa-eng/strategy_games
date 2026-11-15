@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using IH.Core;
 using IH.Shared;
 using LiteNetLib;
@@ -14,6 +15,7 @@ public sealed class ServerOptions
     public int AfkSeconds = 45;
     public BalanceConfig? Balance;
     public bool Quiet;
+    public string? SandboxToken;
 }
 
 public sealed class Conn
@@ -62,7 +64,7 @@ public sealed class GameServer
         {
             if (!_conns.Remove(peer.Id, out var c)) return;
             Log($"- {(c.Name.Length > 0 ? c.Name : "клиент")} отключился");
-            c.Session?.Detach(c, false);
+            c.Session?.Detach(c);
         };
         _listener.NetworkReceiveEvent += (peer, reader, _, _) =>
         {
@@ -80,7 +82,10 @@ public sealed class GameServer
 
     public void Start()
     {
-        if (!_net.Start(Options.Port)) throw new InvalidOperationException($"Не удалось открыть UDP-порт {Options.Port}");
+        bool started = Options.SandboxToken == null
+            ? _net.Start(Options.Port)
+            : _net.Start(IPAddress.Loopback, IPAddress.IPv6Loopback, Options.Port);
+        if (!started) throw new InvalidOperationException($"Не удалось открыть UDP-порт {Options.Port}");
         Log($"Сервер Infinite Horizons запущен, UDP-порт {Port}");
     }
 
@@ -175,7 +180,7 @@ public sealed class GameServer
             case MsgType.LeaveGame:
                 if (c.Session != null)
                 {
-                    c.Session.Detach(c, true);
+                    c.Session.Detach(c);
                     Send(c, MsgType.LobbyList, LobbyList());
                     BroadcastLobbyList();
                 }

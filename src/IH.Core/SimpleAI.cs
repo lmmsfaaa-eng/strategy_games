@@ -23,7 +23,7 @@ public static class SimpleAI
         }
         foreach (var b in Rules.Branches)
         {
-            if (p.BranchCurrent.ContainsKey(b.Id)) continue;
+            if (!g.BranchUnlocked(p, b) || p.BranchCurrent.ContainsKey(b.Id)) continue;
             var next = b.Nodes.Where(n => !p.Nodes.Contains(n.Id) && n.Requires.All(r => g.Knows(p, r)))
                 .OrderBy(n => n.Cost).ThenBy(n => n.Id, StringComparer.Ordinal).FirstOrDefault();
             if (next != null) Do(g, p, CmdType.SetNode, s: next.Id);
@@ -92,7 +92,7 @@ public static class SimpleAI
 
     private static void Faith(Game g, Player p)
     {
-        if (g.FoundedBy(p.Id) == null && g.S.Religions.Count < Rules.Beliefs.Length && p.Faith >= Rules.ReligionPrice(g.S.Religions.Count)
+        if (g.Knows(p, Rules.ReligionCivic) && g.FoundedBy(p.Id) == null && g.S.Religions.Count < Rules.Beliefs.Length && p.Faith >= Rules.ReligionPrice(g.S.Religions.Count)
             && g.CitiesOf(p.Id).Any(c => c.Capital))
         {
             int name = Enumerable.Range(0, Rules.ReligionNames.Length).First(i => g.S.Religions.All(r => r.Name != Rules.ReligionNames[i]));
@@ -144,6 +144,22 @@ public static class SimpleAI
     public static bool Accepts(Game g, Player ai, Proposal pr)
     {
         var rel = g.Rel(pr.From, pr.To);
+        if (pr.Kind == ProposalKind.Trade)
+        {
+            int Value(TradeSide side, bool receiving)
+            {
+                int luxury = side.Luxury != 0 && (!receiving || !ai.HasResource((Resource)side.Luxury)) ? 30 : 0;
+                int tech = Rules.Tech(side.Tech)?.Cost / 2 ?? 0;
+                return side.Gold + 3 * side.Favor + luxury + tech;
+            }
+            int cost = Value(pr.Requested, false);
+            int benefit = Value(pr.Offered, true);
+            return (pr.Requested.Gold == 0 || ai.Gold - pr.Requested.Gold + pr.Offered.Gold >= 20)
+                && benefit * (rel.Allied ? 110L : 100L) >= cost * 100L;
+        }
+        if (pr.Kind == ProposalKind.Alliance)
+            return !rel.AtWar && (rel.OpenBorders || g.SameFaith(pr.From, pr.To))
+                && g.Power(pr.From) >= g.Power(ai.Id) * 0.5;
         if (g.SameFaith(pr.From, pr.To)) return true; // one faith: peace and open borders come easily
         if (pr.Kind == ProposalKind.Peace)
             return g.S.Turn - rel.SinceTurn >= 8 || g.Power(ai.Id) < g.Power(pr.From);
@@ -153,6 +169,11 @@ public static class SimpleAI
     private static void Diplomacy(Game g, Player p)
     {
         double mine = g.Power(p.Id);
+        foreach (var call in g.S.DefenseCalls.Where(c => c.Recipient == p.Id).ToList())
+        {
+            bool join = mine + g.Power(call.Ally) >= g.Power(call.Aggressor);
+            Do(g, p, CmdType.RespondDefense, call.Id, join ? 1 : 0);
+        }
         foreach (var q in g.Active.ToList())
         {
             if (q.Id == p.Id) continue;
@@ -160,14 +181,27 @@ public static class SimpleAI
             if (!rel.Met) continue;
             if (rel.AtWar)
             {
+                if (p.Favor >= 40 && g.S.Turn % 12 == p.Id % 12)
+                    Do(g, p, CmdType.StartEspionage, q.Id);
                 if (g.S.Turn - rel.SinceTurn >= 12 && (mine < g.Power(q.Id) * 1.2 || g.Rand(100) < 15))
                     Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.Peace);
             }
-            else if (g.S.Turn > 40 && g.S.Turn % 8 == p.Id % 8 && g.S.Turn - rel.SinceTurn > 20
+            else if (!rel.Allied && g.S.Turn > 40 && g.S.Turn % 8 == p.Id % 8 && g.S.Turn - rel.SinceTurn > 20
                      && mine > 1.7 * Math.Max(4, g.Power(q.Id)) && g.Rand(100) < 20)
                 Do(g, p, CmdType.DeclareWar, q.Id);
             else if (!rel.OpenBorders && g.Rand(100) < 4)
                 Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.OpenBorders);
+            else if (!rel.Allied && rel.OpenBorders && g.S.Turn > 35 && g.S.Turn % 16 == (p.Id + q.Id) % 16)
+                Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.Alliance);
+            else if (rel.OpenBorders && !p.Embargoes.Contains(q.Id) && !q.Embargoes.Contains(p.Id)
+                && g.S.Turn % 19 == (p.Id * 3 + q.Id) % 19)
+            {
+                var luxury = p.Resources.FirstOrDefault(r => Rules.Res((Resource)r).Class == ResClass.Luxury
+                    && !g.S.LuxuryAgreements.Any(x => x.From == p.Id && x.To == q.Id && x.Resource == r));
+                if (luxury != 0)
+                    Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.Trade, s: TradeTerms.Encode(
+                        new TradeSide { Luxury = luxury }, new TradeSide { Gold = 25 }));
+            }
         }
     }
 
@@ -348,7 +382,7 @@ public static class SimpleAI
                     break;
                 case "Summon":
                     if (!g.S.Units.Values.Any(e => enemies.Contains(e.Owner) && grid.Distance(e.Tile, u.Tile) <= 4)) continue;
-                    target = grid.Range(u.Tile, range).Where(t => g.S.Tiles[t].Passable && g.CityAt(t) == null && !g.At(t).Any(x => x.Owner != p.Id))
+                    target = grid.Range(u.Tile, range).Where(t => g.S.Tiles[t].Passable && g.CityAt(t) == null && g.HasUnitSpace(p.Id, t))
                         .DefaultIfEmpty(-1).First();
                     if (target < 0) continue;
                     break;

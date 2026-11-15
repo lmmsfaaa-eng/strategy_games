@@ -18,6 +18,7 @@ public partial class GameScreen
         RefreshAttention();
         RefreshUnit();
         RefreshOdds();
+        RefreshNationHud();
         // the city panel takes the right edge, so the log and the reminders step aside
         bool city = _win == Win.City;
         _logPanel.Visible = !city;
@@ -110,7 +111,7 @@ public partial class GameScreen
             int rate = i < me.BranchRate.Length ? me.BranchRate[i] : 0, progress = i < me.BranchProgress.Length ? me.BranchProgress[i] : 0;
             bool canPick = BranchCanPick(i);
             if (node == null && !canPick && !b.Nodes.Any(n => me.Nodes.Contains(n.Id))) continue; // not reachable yet
-            void Open() { _branchTab = idx; Toggle(Win.Branches, true); }
+            void Open() => OpenBranch(idx);
             if (node != null)
             {
                 int cost = me.NodeCosts.FirstOrDefault(c => c.Id == node.Id)?.Cost ?? node.Cost;
@@ -132,6 +133,7 @@ public partial class GameScreen
     private bool BranchCanPick(int i)
     {
         var me = W.Me;
+        if (!BranchUnlocked(i)) return false;
         if (i < me.BranchCurrent.Length && me.BranchCurrent[i].Length > 0) return false;
         var have = new HashSet<string>(me.Nodes);
         return Rules.Branches[i].Nodes.Any(n => !have.Contains(n.Id) && n.Requires.All(r => Rules.Satisfied(r, me.Known, me.Future, me.Civics, me.CivicLevel, have)));
@@ -154,9 +156,9 @@ public partial class GameScreen
         }
         if (alive)
         {
-            foreach (var pr in me.Proposals.Where(p => p.To == W.MyId).Take(2))
-                Item(Ico.Favor, Ui.Favor, $"«{W.PlayerName(pr.From)}» предлагает {(pr.Kind == (byte)ProposalKind.Peace ? "мир" : "открыть границы")}",
-                    () => Toggle(Win.Diplomacy, true), "Ответить можно в окне дипломатии", false);
+            if (InboxCount > 0)
+                Item(Ico.Favor, Ui.Favor, $"Входящие предложения: {InboxCount}",
+                    () => OpenDiplomacy(DiplomacyTab.Inbox), "Сделки, договоры и призывы к защите", false);
             if (me.Research.Length == 0 && me.Available.Length > 0)
                 Item(Ico.Science, Ui.Science, "Выберите исследование", () => Toggle(Win.Science, true), "Наука копится впустую");
             if (me.Civic.Length == 0)
@@ -165,7 +167,7 @@ public partial class GameScreen
             {
                 if (!BranchCanPick(i)) continue;
                 int idx = i;
-                Item(Ico.Branch, PowerColor(i), $"{Rules.Branches[i].Name}: выберите узел", () => { _branchTab = idx; Toggle(Win.Branches, true); }, "Очки ветки копятся, пока узел не выбран");
+                Item(Ico.Branch, PowerColor(i), $"{Rules.Branches[i].Name}: выберите узел", () => OpenBranch(idx), "Очки ветки копятся, пока узел не выбран");
             }
             var idleCities = W.Cities.Values.Where(c => c.Owner == W.MyId && c.Detail is { Queue.Length: 0, DisorderTurns: 0 }).OrderBy(c => c.Id).ToList();
             foreach (var c in idleCities.Take(2))
@@ -176,10 +178,10 @@ public partial class GameScreen
             if (idleCities.Count > 2) Item(Ico.City, Ui.Prod, $"…и ещё городов без дела: {idleCities.Count - 2}", () => Toggle(Win.Economy, true), "Список городов — в окне экономики");
             int idle = W.MyTurn ? W.Units.Values.Count(IsReady) : 0;
             if (idle > 0) Item(Ico.Sword, Ui.Text, $"Юниты без приказа: {idle}", () => SelectNext(true), "N — следующий юнит, Пробел — пропустить, F — укрепиться");
-            if (me.MyReligion == 0 && me.Religions.Length < Rules.Beliefs.Length && me.Faith >= Rules.ReligionPrice(me.Religions.Length))
+            if (W.Knows(Rules.ReligionCivic) && me.MyReligion == 0 && me.Religions.Length < Rules.Beliefs.Length && me.Faith >= Rules.ReligionPrice(me.Religions.Length))
                 Item(Ico.Faith, Ui.Faith, "Можно основать религию", () => Toggle(Win.Religion, true), "Веры хватает на собственную религию", false);
             if (me.CongressIn <= 5 && me.Favor >= 10)
-                Item(Ico.Favor, Ui.Favor, $"Конгресс через {me.CongressIn} х. — голосуйте", () => Toggle(Win.Diplomacy, true), "Выборы председателя и резолюция: голоса — ваше одобрение", false);
+                Item(Ico.Favor, Ui.Favor, $"Конгресс через {me.CongressIn} х. — голосуйте", () => OpenDiplomacy(DiplomacyTab.Congress), "Выборы председателя и резолюция: голоса — ваше одобрение", false);
             foreach (var c in W.Cities.Values.Where(c => c.Owner == W.MyId && c.Detail is { } d && (d.DisorderTurns > 0 || d.Unrest >= 60)).Take(2))
             {
                 int cid = c.Id, tile = c.Tile;
@@ -213,7 +215,7 @@ public partial class GameScreen
     }
 
     // -------------------------------------------------------- unit panel
-    private static Ico UnitIcon(UnitDef def) => def.Role switch
+    internal static Ico UnitIcon(UnitDef def) => def.Role switch
     {
         UnitRole.Settler => Ico.City,
         UnitRole.Worker => Ico.Prod,

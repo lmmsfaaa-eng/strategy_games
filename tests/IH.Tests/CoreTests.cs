@@ -219,7 +219,7 @@ public class GameTests
         Assert.Null(Cmd(g, 0, CmdType.DeclareWar, 1));
         // drop an overwhelming army next to the enemy capital
         int spot = g.Grid.Nb[target.Tile].First(t => g.S.Tiles[t].Passable);
-        for (int i = 0; i < 6; i++) g.AddUnit(0, Rules.UnitIndex("tank"), spot);
+        for (int i = 0; i < Rules.MaxUnitsPerTile; i++) g.AddUnit(0, Rules.UnitIndex("tank"), spot);
         foreach (var u in g.At(spot).ToList())
         {
             if (target.Owner == 0) break;
@@ -453,6 +453,8 @@ public class GameTests
         foreach (int pid in new[] { 0, 1 }) Assert.Null(Cmd(g, pid, CmdType.FoundCity, g.UnitsOf(pid).First(u => u.Def.Role == UnitRole.Settler).Id));
         var p = g.P(0);
         var capital = g.CitiesOf(0).Single(); var foreign = g.CitiesOf(1).Single();
+        p.Civics.Add(Rules.ReligionCivic);
+        g.P(1).Civics.Add(Rules.ReligionCivic);
         Assert.NotNull(Cmd(g, 0, CmdType.FoundReligion, 0, 1));                  // not enough faith
         Assert.NotNull(Cmd(g, 0, CmdType.Recruit, capital.Id));                  // nothing to preach yet
         p.Faith = 500;
@@ -506,6 +508,7 @@ public class GameTests
         var s = g.AddUnit(0, Rules.UnitIndex("settler"), near);
         Assert.Null(Cmd(g, 0, CmdType.FoundCity, s.Id));
         var second = g.CitiesOf(0).First(c => !c.Capital);
+        g.P(0).Civics.Add(Rules.ReligionCivic);
         g.P(0).Faith = 500;
         Assert.Null(Cmd(g, 0, CmdType.FoundReligion, 2, 4));
         Assert.Equal(0, second.Religion);
@@ -530,7 +533,7 @@ public class GameTests
                 if (!view.Visible[i]) Assert.Equal(0UL, p.KnownTiles[i] & TileData.VisibleBit);
             Assert.All(p.KnownCities.Values.Where(c => c.Owner != pid), c => Assert.Null(c.Detail));
             Assert.Contains(p.KnownTiles, k => k == 0); // 40 turns is not enough to see the whole world
-            foreach (var o in view.Players.Where(o => !o.Met)) { Assert.Equal(0, o.Techs); Assert.Equal(0, o.Cities); }
+            foreach (var o in view.Players.Where(o => !o.Met)) { Assert.Equal(-1, o.Techs); Assert.Equal(-1, o.Cities); }
         }
     }
 }

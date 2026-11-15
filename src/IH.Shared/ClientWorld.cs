@@ -65,9 +65,11 @@ public sealed class ClientWorld
     {
         if (!Grid.Valid(target) || Vis[target] == 0) return null;
         var mover = Rules.MoverFor(u.Def, Knows);
+        var full = Units.Values.Where(other => other.Owner == u.Owner && other.Id != u.Id)
+            .GroupBy(other => other.Tile).Where(stack => stack.Count() >= Rules.MaxUnitsPerTile).Select(stack => stack.Key).ToHashSet();
         return Grid.FindPath(u.Tile, target, (from, to) =>
         {
-            if (Vis[to] == 0) return -1;
+            if (Vis[to] == 0 || full.Contains(to)) return -1;
             int c = Rules.MoveCost(Tiles[from], Tiles[to], mover);
             if (c < 0) return -1;
             int owner = Tiles[to].Owner;
@@ -185,7 +187,14 @@ public sealed class ClientWorld
             case EventKind.Bankrupt: return $"Казна пуста: {e.S}";
             case EventKind.IdleCity: return $"Город {e.S} простаивает — выберите производство";
             case EventKind.Proposal:
-                return $"«{PlayerName(e.A)}» предлагает: {(e.B == (int)ProposalKind.Peace ? "мир" : "открытые границы")}";
+                return $"«{PlayerName(e.A)}» предлагает: {(ProposalKind)e.B switch
+                {
+                    ProposalKind.Peace => "мир",
+                    ProposalKind.OpenBorders => "открытые границы",
+                    ProposalKind.Alliance => "оборонительный союз",
+                    ProposalKind.Trade => "торговую сделку",
+                    _ => "договор",
+                }}";
             case EventKind.Info: return e.S;
             case EventKind.Ranged:
                 bool dead = e.S == "1";

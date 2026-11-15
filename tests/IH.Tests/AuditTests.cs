@@ -25,7 +25,7 @@ public class AuditTests
                 if (!Rules.ResourceVisible(r, p.Has)) bad.Add($"ход {g.S.Turn}: {p.Name} видит {Rules.Res(r).Name} без технологии");
             }
             foreach (var o in view.Players)
-                if (!o.Met && !o.Neutral && (o.Name != "Неизвестная цивилизация" || o.Techs != 0 || o.Cities != 0 || o.Score != 0))
+                if (!o.Met && !o.Neutral && (o.Name != "Неизвестная цивилизация" || o.Techs != -1 || o.Cities != -1 || o.Score != -1))
                     bad.Add($"ход {g.S.Turn}: {p.Name} знает данные незнакомой цивилизации {o.Id}");
             foreach (var c in p.KnownCities.Values)
                 if (c.Owner != p.Id && c.Detail != null) bad.Add($"ход {g.S.Turn}: {p.Name} видит внутренности чужого города {c.Name}");

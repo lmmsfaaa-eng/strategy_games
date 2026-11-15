@@ -137,6 +137,7 @@ public sealed partial class Game
         foreach (var p in Active) RefreshEconomy(p);
         AntiSnowball.Recompute(this);
         foreach (var p in Active) RefreshEconomy(p);
+        TickDiplomacy();
     }
 
     // ------------------------------------------------------------ economy
@@ -162,21 +163,20 @@ public sealed partial class Game
         }
         p.Resources = connected.ToList();
         p.Luxuries = connected.Count(r => Rules.Res((Resource)r).Class == ResClass.Luxury);
-        // links to other players: luxuries traded over open borders, long wars, shared faith
-        var foreignLux = new HashSet<int>();
-        int weariness = 0, brethren = 0, tradePartners = 0;
+        // Links to other players: negotiated imports, long wars, shared faith.
+        var agreements = S.LuxuryAgreements.Where(x => (x.From == p.Id || x.To == p.Id) && ValidLuxuryAgreement(x)).ToArray();
+        var foreignLux = agreements.Where(x => x.To == p.Id && !connected.Contains(x.Resource)).Select(x => x.Resource).Distinct();
+        int weariness = 0, brethren = 0;
+        bool freeTradePartner = false;
         foreach (var o in Active)
         {
             if (o.Id == p.Id) continue;
             var rel = Rel(p.Id, o.Id);
             if (rel.AtWar) { if (S.Resolution == "peace" || S.Turn - rel.SinceTurn > Rules.WarWearinessAfter) weariness++; continue; }
             if (rel.Met && SameFaith(p.Id, o.Id)) brethren++;
-            if (!rel.OpenBorders) continue;
-            tradePartners++;
-            foreach (int r in o.Resources)
-                if (Rules.Res((Resource)r).Class == ResClass.Luxury && !connected.Contains(r)) foreignLux.Add(r);
+            if (rel.OpenBorders && CanTrade(p, o)) freeTradePartner = true;
         }
-        p.TradeLuxuries = Math.Min(Rules.MaxTradeLuxuries, foreignLux.Count);
+        p.TradeLuxuries = Math.Min(Rules.MaxTradeLuxuries, foreignLux.Count());
         p.WarWeariness = Math.Min(3, weariness);
         p.Brethren = brethren;
         bool chair = S.Chair == p.Id;
@@ -200,7 +200,7 @@ public sealed partial class Game
             double culPct = fx.CulPct + (bel?.CulPct ?? 0), maintCut = 0, upkeep = 0, cityFaith = 0, foodPct = 0;
             // congress resolutions in force
             if (S.Resolution == "aid" && p.Lag > 0) prodPct += 15;
-            if (S.Resolution == "trade" && tradePartners > 0) goldPct += 10;
+            if (S.Resolution == "trade" && freeTradePartner) goldPct += 10;
             foreach (var buff in c.Buffs)
             {
                 if (buff.Until <= S.Turn) continue;
@@ -313,7 +313,7 @@ public sealed partial class Game
         }
         p.FavorRate = 1 + partners + (atWar ? 0 : 1) + fx.Favor + p.Brethren; // co-religionists speak well of each other
         foreach (var b in Rules.Branches)
-            p.BranchRate[b.Id] = b.FromScience * sci + b.FromCulture * culture + b.FromFaith * faith; // peace and open borders earn diplomatic favor
+            p.BranchRate[b.Id] = BranchUnlocked(p, b) ? b.FromScience * sci + b.FromCulture * culture + b.FromFaith * faith : 0;
         p.EchoBonus = AntiSnowball.Echo(this, p);
         p.GoldRate = (int)Math.Floor(p.Income - baseCost - p.StrainCost);
     }
@@ -535,6 +535,7 @@ public sealed partial class Game
         if (item.StartsWith("u:"))
         {
             int type = Rules.UnitIndex(item[2..]);
+            if (!HasUnitSpace(p.Id, c.Tile)) { c.Prod = cost; return; }
             if (Rules.Units[type].Role == UnitRole.Settler)
             {
                 if (c.Pop < 2) { c.Prod = cost; return; } // waits until the city can spare a citizen
@@ -571,7 +572,8 @@ public sealed partial class Game
             for (int i = 0; i < Rules.Units.Length; i++)
                 if (Rules.Units[i].Role == UnitRole.Military && p.Has(Rules.Units[i].Tech) && Rules.Units[i].Str > Rules.Units[best].Str) best = i;
             TransferCity(c, Neutral.Id, false);
-            for (int i = 0; i < 2; i++) AddUnit(Neutral.Id, best, c.Tile).Fortified = true;
+            for (int i = 0; i < 2 && HasUnitSpace(Neutral.Id, c.Tile); i++)
+                AddUnit(Neutral.Id, best, c.Tile).Fortified = true;
         }
         else
         {

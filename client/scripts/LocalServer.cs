@@ -8,6 +8,7 @@ namespace IH.Client;
 public static class LocalServer
 {
     private static int _pid = -1;
+    public static string? SandboxToken { get; private set; }
 
     public static bool Running => _pid > 0 && OS.IsProcessRunning(_pid);
     public static string SaveDir => OS.GetUserDataDir().PathJoin("saves");
@@ -51,9 +52,9 @@ public static class LocalServer
     }
 
     /// <summary>Starts the server. Returns null on success or a message for the player.</summary>
-    public static string? Start(int port, string? loadPath)
+    public static string? Start(int port, string? loadPath, bool sandbox = false)
     {
-        if (Running) return null;
+        if (Running) return sandbox || SandboxToken != null ? "Сначала остановите текущий локальный сервер" : null;
         var found = Locate();
         if (found == null)
             return "Не найден IH.Server. Положите собранный сервер в папку server рядом с игрой или запустите его вручную (см. README).";
@@ -61,15 +62,35 @@ public static class LocalServer
         var args = found.Value.args.ToList();
         // the server dies with the client, so save every turn
         args.AddRange(new[] { "--port", port.ToString(), "--saves", SaveDir, "--autosave", "1", "--mods", ModsDir });
-        if (!string.IsNullOrEmpty(loadPath)) { args.Add("--load"); args.Add(loadPath); }
+        SandboxToken = sandbox ? System.Guid.NewGuid().ToString("N") : null;
+        if (SandboxToken != null) args.AddRange(new[] { "--sandbox-token", SandboxToken });
+        _startupErrorFile = null;
+        if (!string.IsNullOrEmpty(loadPath))
+        {
+            _startupErrorFile = OS.GetUserDataDir().PathJoin($"load-error-{System.Guid.NewGuid():N}.txt");
+            args.AddRange(new[] { "--load", loadPath, "--startup-error-file", _startupErrorFile });
+        }
         _pid = OS.CreateProcess(found.Value.program, args.ToArray());
         return _pid > 0 ? null : "Не удалось запустить сервер";
+    }
+
+    private static string? _startupErrorFile;
+
+    public static string? ConsumeStartupError()
+    {
+        string? path = _startupErrorFile;
+        _startupErrorFile = null;
+        if (path == null || !Godot.FileAccess.FileExists(path)) return null;
+        string text = Godot.FileAccess.GetFileAsString(path);
+        DirAccess.RemoveAbsolute(path);
+        return string.IsNullOrWhiteSpace(text) ? null : text;
     }
 
     public static void Stop()
     {
         if (Running) OS.Kill(_pid);
         _pid = -1;
+        SandboxToken = null;
     }
 
     /// <summary>Addresses friends can use: Radmin VPN hands out 26.x.x.x, otherwise ordinary LAN addresses.</summary>

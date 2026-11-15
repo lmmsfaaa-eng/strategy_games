@@ -88,6 +88,8 @@ public class DesignTests
         var g = WithCities();
         var p = g.P(0); var q = g.P(1);
         Assert.Empty(g.S.Milestones);
+        p.Civics.Add(Rules.ReligionCivic);
+        q.Civics.Add(Rules.ReligionCivic);
         p.Faith = 500; q.Faith = 500;
         Assert.Null(Cmd(g, 0, CmdType.FoundReligion, 0, 0));
         int favor = p.Favor;

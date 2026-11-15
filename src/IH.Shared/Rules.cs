@@ -157,6 +157,7 @@ public static class Rules
 
     public static string EraName(int era)
     {
+        if (era < 0) return "Неизвестная эпоха";
         if (era < EraNames.Length) return EraNames[era];
         string[] future = { "Эра синтеза", "Орбитальная эра", "Квантовая эра", "Постчеловеческая эра" };
         int f = era - EraNames.Length;
@@ -444,6 +445,7 @@ public static class Rules
     }
 
     public const int EmbarkCost = 100; // boarding or landing ends the unit's move
+    public const int MaxUnitsPerTile = 3;
 
     public static Mover MoverFor(UnitDef d, Func<string?, bool> knows) => new(d.Sea, knows("sailing"), knows("astronomy"), d.X.Flying);
 
@@ -557,7 +559,7 @@ public static class Rules
     {
         new("exchange", "Научный обмен", "научное эхо для всех удваивается"),
         new("aid", "Помощь отстающим", "державы, отстающие от мира, получают +15% производства"),
-        new("trade", "Свободная торговля", "+10% золота всем, у кого есть открытые границы хотя бы с одной державой"),
+        new("trade", "Свободная торговля", "+10% золота при открытых границах хотя бы с одной державой, с которой нет эмбарго"),
         new("peace", "Осуждение войн", "усталость от войны начинается с первого же хода любой войны"),
     };
     public static ResolutionDef? Resolution(string? id) => Array.Find(Resolutions, r => r.Id == id);
@@ -620,13 +622,16 @@ public static class Rules
 
     private static CivicDef C(string id, string name, int cost, int era, Bonus effect, params string[] pre) => new(id, name, cost, era, pre, effect);
 
+    public const string ReligionCivic = "c_rites";
+    public const string ShamanismBranch = "shamanism";
+
     /// <summary>The social institutions tree, advanced by culture.</summary>
     public static readonly CivicDef[] Civics =
     {
         C("c_tribal", "Племенной строй", 25, 0, new Bonus { Happy = 1 }),
         C("c_craft", "Ремесло", 40, 0, new Bonus { ProdPct = 10 }, "c_tribal"),
         C("c_trade", "Внешняя торговля", 40, 0, new Bonus { GoldPct = 10 }, "c_tribal"),
-        C("c_rites", "Обряды предков", 50, 0, new Bonus { FaithPct = 25 }, "c_tribal"),
+        C(ReligionCivic, "Обряды предков", 50, 0, new Bonus { FaithPct = 25 }, "c_tribal"),
         C("c_state", "Государственная служба", 70, 0, new Bonus { UpkeepCutPct = 15 }, "c_craft", "c_trade"),
         C("c_military", "Воинская традиция", 70, 0, new Bonus { StrPct = 10 }, "c_craft"),
 
@@ -912,7 +917,7 @@ public static class Rules
         // Shamanism: nature, spirits and support. Shamans heal, grow forests and call spirits; werebeasts thrive in woods.
         new BranchDef
         {
-            Id = "shamanism", Name = "Шаманство", FromFaith = 1f, FromCulture = 0.5f, PowerName = "Духи", Version = BuiltInVersion,
+            Id = ShamanismBranch, Name = "Шаманство", FromFaith = 1f, FromCulture = 0.5f, PowerName = "Духи", Version = BuiltInVersion,
             PowerResources = new[] { "Furs", "Incense", "Honey", "Truffles", "Deer", "Ivory" },
             Description = "Природа, духи и поддержка. Шаманы лечат войска, выращивают леса и призывают духов; оборотни сильны в лесу.",
             Nodes = new[]
@@ -1030,6 +1035,9 @@ public static class Rules
 
     public static NodeDef? Node(string? id) => id != null && _nodes.TryGetValue(id, out var n) ? n : null;
     public static BranchDef? BranchOf(string nodeId) => Branches.FirstOrDefault(b => b.Nodes.Any(n => n.Id == nodeId));
+
+    public static bool BranchUnlocked(BranchDef branch, bool knowsRites, IEnumerable<string> nodes, string? current)
+        => branch.Id != ShamanismBranch || knowsRites || branch.Nodes.Any(n => nodes.Contains(n.Id) || n.Id == current);
 
     /// <summary>Human-readable name of anything a node may require, with the tree it comes from.</summary>
     public static string RequirementName(string id)

@@ -13,6 +13,7 @@ public partial class Main : Control
     private GameScreen? _game;
     public GameScreen? Game => _game;
     private string _tokenKey = "";
+    public bool InSandbox => _tokenKey == "sandbox:local" && LocalServer.Running && LocalServer.SandboxToken != null;
 
     public override void _Ready()
     {
@@ -24,7 +25,7 @@ public partial class Main : Control
 
         Net.TokenIssued += token =>
         {
-            if (_tokenKey.Length == 0) return;
+            if (_tokenKey.Length == 0 || InSandbox) return;
             _cfg.SetValue("tokens", _tokenKey, token);
             _cfg.Save(CfgPath);
         };
@@ -37,6 +38,7 @@ public partial class Main : Control
         };
         Net.StateChanged += state =>
         {
+            if (state == NetState.Offline && InSandbox) LocalServer.Stop();
             if (state is NetState.Lobby or NetState.Room or NetState.Offline)
             {
                 _game?.QueueFree();
@@ -69,6 +71,7 @@ public partial class Main : Control
             if (arg == "--autojoin") _menu.AutoJoin = true;
             if (arg == "--hostsave") _menu.SelectLatestSave();
             if (arg == "--hostlocal") _menu.CallDeferred(nameof(MenuScreen.HostPressed));
+            if (arg == "--sandbox") _menu.CallDeferred(nameof(MenuScreen.HostSandboxPressed));
             if (arg.StartsWith("--tour=")) AddChild(new DemoTour(this, arg[7..]));
         }
     }
@@ -91,7 +94,7 @@ public partial class Main : Control
         _cfg.Save(CfgPath);
         _tokenKey = tokenKey ?? $"{host}:{port}:{name}";
         Net.Name = name;
-        Net.Token = _cfg.GetValue("tokens", _tokenKey, "").AsString();
+        Net.Token = InSandbox ? "" : _cfg.GetValue("tokens", _tokenKey, "").AsString();
         Net.Connect(host, port);
     }
 

@@ -16,6 +16,8 @@ public sealed class MeshBuilder
     public Transform3D Xf = Transform3D.Identity;
     /// <summary>Applied to every colour (fog of war darkens remembered tiles).</summary>
     public Func<Color, Color>? Tint;
+    /// <summary>Darken vertices close to the local ground plane to ground the models under ambient lighting.</summary>
+    public float ContactShade;
 
     public MeshBuilder() => _st.Begin(Mesh.PrimitiveType.Triangles);
 
@@ -28,9 +30,11 @@ public sealed class MeshBuilder
         if (n.LengthSquared() < 1e-12f) return;
         n = n.Normalized();
         if (n.Dot(outward) < 0) { (b, c) = (c, b); n = -n; }
-        _st.SetNormal(n); _st.SetColor(color); _st.AddVertex(a);
-        _st.SetNormal(n); _st.SetColor(color); _st.AddVertex(b);
-        _st.SetNormal(n); _st.SetColor(color); _st.AddVertex(c);
+        Color Lit(Vector3 p) => ContactShade <= 0 ? color
+            : color.Darkened(ContactShade * (1f - Mathf.Clamp(p.Y / 0.19f, 0f, 1f)));
+        _st.SetNormal(n); _st.SetColor(Lit(a)); _st.AddVertex(a);
+        _st.SetNormal(n); _st.SetColor(Lit(b)); _st.AddVertex(b);
+        _st.SetNormal(n); _st.SetColor(Lit(c)); _st.AddVertex(c);
         Count += 3;
     }
 
@@ -374,7 +378,7 @@ public static class Models
     public static Mesh Unit(UnitDef def, int owner, Color team)
     {
         if (UnitCache.TryGetValue((def.Id, owner), out var cached)) return cached;
-        var b = new MeshBuilder();
+        var b = new MeshBuilder { ContactShade = 0.16f };
         // the plate under the figure shows whose unit it is even when the figure itself is mostly steel or wood
         b.Column(V(0, 0.005f, 0), 0.4f, 0.03f, team.Darkened(0.25f), 10);
         b.Column(V(0, 0.035f, 0), 0.33f, 0.012f, team, 10);
@@ -736,10 +740,13 @@ public static class Town
     /// </summary>
     public static Mesh City(int cityId, int pop, int era, bool capital, IReadOnlyCollection<string> buildings, Color team)
     {
-        var b = new MeshBuilder();
-        // two rings of building plots; the middle stays free for the garrison
+        var b = new MeshBuilder { ContactShade = 0.19f };
+        // Warm paving and open ground leave a small parade square in the centre.
+        b.Column(V(0, 0.002f, 0), 0.4f, 0.009f, C(0x92866A), 10);
+        b.Column(V(0, 0.011f, 0), 0.373f, 0.005f, C(0xC5B58D), 10);
+        // Two rings of plots around the garrison square.
         var slots = new List<Vector3>();
-        for (int i = 0; i < 8; i++) { float a = Mathf.Tau * i / 8 + 0.2f; slots.Add(V(Mathf.Cos(a) * 0.47f, 0, Mathf.Sin(a) * 0.47f)); }
+        for (int i = 0; i < 8; i++) { float a = Mathf.Tau * i / 8 + 0.2f; slots.Add(V(Mathf.Cos(a) * 0.53f, 0, Mathf.Sin(a) * 0.53f)); }
         for (int i = 0; i < 14; i++) { float a = Mathf.Tau * i / 14; slots.Add(V(Mathf.Cos(a) * 0.74f, 0, Mathf.Sin(a) * 0.74f)); }
         var taken = new bool[slots.Count];
 
@@ -760,7 +767,7 @@ public static class Town
             if (slot < 0) break;
             taken[slot] = true;
             string what = id;
-            At(slots[slot], id == "palace" ? 1.5f : 1.3f, () => Landmark(b, what, team));
+            At(slots[slot], id == "palace" ? 1.35f : 1.12f, () => Landmark(b, what, team));
         }
 
         // houses on the plots that are left: more of them as the city grows
@@ -789,14 +796,19 @@ public static class Town
     {
         if (era <= 0)
         {   // huts
-            b.Column(V(0, 0, 0), 0.085f, 0.1f + tall * 0.03f, C(0xC9B48A), 6);
-            b.Pyramid(V(0, 0.1f + tall * 0.03f, 0), 0.12f, 0.12f, 6, roof ?? C(0xB89A54));
+            float wall = 0.13f + tall * 0.045f;
+            b.Column(V(0, 0, 0), 0.106f, 0.032f, C(0x9B8C79), 6);
+            b.Column(V(0, 0.031f, 0), 0.085f, wall, C(0xDFCAA7), 6);
+            b.Box(V(0, 0.048f, 0.08f), V(0.045f, 0.088f, 0.027f), C(0x857063));
+            b.Pyramid(V(0, wall + 0.032f, 0), 0.13f, 0.14f, 6, roof ?? (tall > 0.5f ? C(0xAA7357) : C(0xB69965)));
         }
         else if (era <= 3)
         {   // plastered houses under tiled roofs
             float h = 0.13f + tall * 0.1f + Math.Min(0.08f, pop * 0.006f);
-            b.Box(V(0, h / 2, 0), V(0.17f, h, 0.15f), C(0xEADFC8));
-            b.Pyramid(V(0, h, 0), 0.14f, 0.1f, 4, roof ?? (tall > 0.5f ? C(0xB5533A) : C(0x9A4A34)), Mathf.Pi / 4);
+            b.Box(V(0, h / 2, 0), V(0.17f, h, 0.15f), C(0xE7D7BE));
+            b.Box(V(0, 0.047f, 0.078f), V(0.044f, 0.09f, 0.018f), C(0x6D5142));
+            b.Pyramid(V(0, h, 0), 0.14f, 0.1f, 4, roof ?? (tall > 0.5f ? C(0xB3755D) : C(0x945F54)), Mathf.Pi / 4);
+            if (tall > 0.66f) b.Box(V(-0.037f, h + 0.055f, 0.015f), V(0.035f, 0.11f, 0.037f), C(0xA68068));
         }
         else if (era <= 5)
         {   // brick blocks with flat roofs

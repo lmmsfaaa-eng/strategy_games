@@ -8,7 +8,7 @@ using IH.Shared;
 
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* no console */ } // Cyrillic on any Windows code page
 var opt = new ServerOptions();
-string? load = null, mods = "mods";
+string? load = null, startupErrorFile = null, mods = "mods";
 bool sim = false, noBalance = false;
 int simTurns = 300, simPlayers = 6, simSeed = 1;
 double simStrong = 1;
@@ -21,10 +21,12 @@ for (int i = 0; i < args.Length; i++)
     {
         case "--port": opt.Port = int.Parse(Next()); break;
         case "--saves": opt.SaveDir = Next(); break;
+        case "--sandbox-token": opt.SandboxToken = Next(); break;
         case "--autosave": opt.AutosaveEvery = int.Parse(Next()); break;
         case "--afk": opt.AfkSeconds = int.Parse(Next()); break;
         case "--balance": opt.Balance = SaveGame.FromJson<BalanceConfig>(File.ReadAllText(Next())); break;
         case "--load": load = Next(); break;
+        case "--startup-error-file": startupErrorFile = Next(); break;
         case "--mods": mods = Next(); break;
         case "--export-mods": { string d = Next(); ModLoader.Export(d); Console.WriteLine($"Примеры веток записаны в {Path.GetFullPath(d)}"); return 0; }
         case "--list-ids":
@@ -62,9 +64,24 @@ Rules.SetBranches(ModLoader.Load(mods, Console.WriteLine));
 
 if (sim) { Simulation.Run(simTurns, simPlayers, simSeed, noBalance, opt.Balance, true, simStrong, simMap); return 0; }
 
+if (opt.SandboxToken != null)
+{
+    if (opt.SandboxToken.Length != 32 || load != null)
+        throw new ArgumentException("Песочница требует отдельной новой партии и локального ключа");
+    opt.SaveDir = Path.Combine(opt.SaveDir, "sandbox");
+}
 var server = new GameServer(opt);
 server.Start();
-if (load != null) server.LoadSession(load);
+if (load != null)
+{
+    try { server.LoadSession(load); }
+    catch (Exception e) when (e is InvalidDataException or IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+    {
+        Console.Error.WriteLine(e.Message);
+        if (startupErrorFile != null) File.WriteAllText(startupErrorFile, e.Message);
+        return 2;
+    }
+}
 Console.WriteLine("Игроки подключаются по вашему IP в Radmin VPN и этому порту. Ctrl+C — остановка с сохранением.");
 
 bool running = true;

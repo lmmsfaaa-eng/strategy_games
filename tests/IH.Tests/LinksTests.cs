@@ -85,7 +85,7 @@ public class LinksTests
     }
 
     [Fact]
-    public void Luxuries_travel_over_open_borders()
+    public void Luxuries_require_a_negotiated_agreement()
     {
         var g = WithCities();
         var p = g.P(0); var city = g.CitiesOf(0).Single();
@@ -95,12 +95,18 @@ public class LinksTests
         Assert.Equal(0, p.TradeLuxuries);                         // no agreement, no trade
         g.Rel(0, 1).OpenBorders = true;
         g.RefreshEconomy(p);
+        Assert.Equal(0, p.TradeLuxuries);
+        Assert.Null(Cmd(g, 1, CmdType.Propose, 0, (int)ProposalKind.Trade,
+            s: TradeTerms.Encode(new TradeSide { Luxury = (int)Resource.Silk }, new TradeSide())));
+        Assert.Null(Cmd(g, 0, CmdType.Respond, g.S.Proposals.Single().Id, 1));
+        g.RefreshEconomy(p);
         Assert.Equal(1, p.TradeLuxuries);
         Assert.Equal(happy + 1, city.Happy);
         Connect(g, 0, Resource.Silk);                             // our own silk: nothing new to import
         Assert.Equal(0, p.TradeLuxuries);
         Assert.Equal(1, p.Luxuries);
-        g.Rel(0, 1).AtWar = true; g.Rel(0, 1).OpenBorders = false;
+        Assert.Null(Cmd(g, 0, CmdType.DeclareWar, 1));
+        Assert.Empty(g.S.LuxuryAgreements);
         g.RefreshEconomy(p);
         Assert.Equal(0, p.TradeLuxuries);
     }
@@ -131,6 +137,7 @@ public class LinksTests
     {
         var g = WithCities();
         var p = g.P(0); var q = g.P(1);
+        p.Civics.Add(Rules.ReligionCivic);
         p.Faith = 500;
         Assert.Null(Cmd(g, 0, CmdType.FoundReligion, 0, 0));
         int rel = g.S.Religions.Single().Id;

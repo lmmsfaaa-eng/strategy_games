@@ -10,6 +10,146 @@ namespace IH.Tests;
 [Collection("network")]
 public class NetworkTests
 {
+    [Fact]
+    public void Diplomatic_data_and_intelligence_stay_private_in_live_deltas_and_reconnect()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ih-test-" + Guid.NewGuid().ToString("N"));
+        var server = new GameServer(new ServerOptions { Port = 0, Quiet = true, SaveDir = dir });
+        var host = new NetClient { Name = "Хост" };
+        var ally = new NetClient { Name = "Союзник" };
+        var observer = new NetClient { Name = "Наблюдатель" };
+        var rejoin = new NetClient { Name = ally.Name };
+        var impostor = new NetClient { Name = ally.Name };
+        var clients = new[] { host, ally, observer };
+        server.Start();
+        try
+        {
+            foreach (var client in clients) client.Connect("127.0.0.1", server.Port);
+            Assert.True(Until(server, clients, () => clients.All(c => c.State == NetState.Lobby)));
+            host.Send(MsgType.CreateGame, new GameSettings { MapW = 40, MapH = 26, MaxPlayers = 3, AiCount = 0, Seed = 17 });
+            Assert.True(Until(server, clients, () => host.Room != null));
+            foreach (var client in clients.Skip(1))
+            {
+                client.Send(MsgType.JoinGame, new IntMsg { V = host.Room!.Info.Id });
+                Assert.True(Until(server, clients, () => client.Room != null));
+            }
+            host.Send(MsgType.StartGame);
+            Assert.True(Until(server, clients, () => clients.All(c => c.World is { Turn: > 0 })));
+            var session = server.Sessions.Values.Single();
+            var game = session.Game!;
+            int owner = host.World!.MyId, recipient = ally.World!.MyId, bystander = observer.World!.MyId;
+            game.Rel(owner, recipient).Met = true;
+            game.Rel(owner, bystander).Met = true;
+            game.P(owner).Gold = 777;
+            game.P(owner).Favor = 40;
+            game.P(owner).Civics.Add("c_diplomacy");
+            host.SendCommand(CmdType.SetStatAccess, recipient, (int)StatAccess.Economy);
+            Assert.True(Until(server, clients, () => ally.World.Players[owner].Gold == 777 && observer.World.Players[owner].Met));
+            Assert.Equal(-1, observer.World.Players[owner].Gold);
+
+            host.SendCommand(CmdType.StartEspionage, bystander);
+            Assert.True(Until(server, clients, () => host.World.Me.Espionage.Length == 1));
+            for (int turn = 0; turn < 3; turn++)
+                foreach (var p in game.Active.ToList()) Assert.Null(game.Execute(p.Id, new GameCommand(CmdType.EndTurn)));
+            session.Flush();
+            Assert.True(Until(server, clients, () => clients.All(c => c.World!.Turn == game.S.Turn)
+                && host.World.Me.Espionage.Single().Observed == game.S.Turn));
+            Assert.Empty(ally.World.Me.Espionage);
+            Assert.Empty(observer.World.Me.Espionage);
+
+            host.SendCommand(CmdType.SetStatAccess, recipient, 0);
+            Assert.True(Until(server, clients, () => ally.World.Players[owner].SharedStats == 0));
+            Assert.Equal(-1, ally.World.Players[owner].Gold);
+            rejoin.Token = ally.Token;
+            ally.Disconnect();
+            Assert.True(Until(server, new[] { host, observer }, () => !game.P(recipient).Connected));
+
+            var afterDisconnect = new[] { host, observer, impostor };
+            string? error = null;
+            impostor.ErrorReceived += text => error = text;
+            impostor.Connect("127.0.0.1", server.Port);
+            Assert.True(Until(server, afterDisconnect, () => impostor.State == NetState.Lobby));
+            impostor.Send(MsgType.JoinGame, new IntMsg { V = session.Id });
+            Assert.True(Until(server, afterDisconnect, () => error != null));
+            Assert.Null(impostor.World);
+            Assert.False(game.P(recipient).Connected);
+
+            rejoin.Connect("127.0.0.1", server.Port);
+            Assert.True(Until(server, new[] { host, observer, rejoin }, () => rejoin.World is { Turn: > 0 }));
+            Assert.Equal(recipient, rejoin.World!.MyId);
+            Assert.Equal(-1, rejoin.World.Players[owner].Gold);
+            Assert.Empty(rejoin.World.Me.Espionage);
+        }
+        finally
+        {
+            foreach (var client in clients) client.Dispose();
+            impostor.Dispose();
+            rejoin.Dispose();
+            server.Stop();
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SandboxCommandsRequireLocalServerHostAndToken(bool sandbox)
+    {
+        const string secret = "0123456789abcdef0123456789abcdef";
+        var dir = Path.Combine(Path.GetTempPath(), "ih-test-" + Guid.NewGuid().ToString("N"));
+        var server = new GameServer(new ServerOptions { Port = 0, Quiet = true, SaveDir = dir, SandboxToken = sandbox ? secret : null });
+        var host = new NetClient { Name = "Хост" };
+        var guest = new NetClient { Name = "Гость" };
+        var clients = new[] { host, guest };
+        server.Start();
+        try
+        {
+            foreach (var client in clients) client.Connect("127.0.0.1", server.Port);
+            Assert.True(Until(server, clients, () => clients.All(c => c.State == NetState.Lobby)));
+            host.Send(MsgType.CreateGame, new GameSettings { MapW = 40, MapH = 26, MaxPlayers = 2, Seed = 17 });
+            Assert.True(Until(server, clients, () => host.Room != null));
+            guest.Send(MsgType.JoinGame, new IntMsg { V = host.Room!.Info.Id });
+            Assert.True(Until(server, clients, () => guest.Room != null));
+            host.Send(MsgType.StartGame);
+            Assert.True(Until(server, clients, () => clients.All(c => c.World is { Turn: > 0 })));
+            var game = server.Sessions.Values.Single().Game!;
+
+            Assert.False(RunCommand(guest, CmdType.SandboxResources, secret));
+            Assert.False(RunCommand(host, CmdType.SandboxResources, "неверный ключ"));
+            int gold = game.P(host.World!.MyId).Gold;
+            Assert.Equal(sandbox, RunCommand(host, CmdType.SandboxResources, secret));
+            Assert.Equal(gold + (sandbox ? 500 : 0), game.P(host.World.MyId).Gold);
+            Assert.Equal(sandbox, RunCommand(host, CmdType.SandboxReveal, secret));
+            if (sandbox)
+            {
+                Assert.True(Until(server, clients, () => host.World.Vis.All(v => v == 2)));
+                Assert.Contains(guest.World!.Vis, v => v != 2);
+                int startingTile = game.UnitsOf(host.World.MyId).First().Tile;
+                int warrior = Rules.UnitIndex("warrior");
+                Assert.True(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, warrior));
+                Assert.False(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, warrior));
+                Assert.Equal(Rules.MaxUnitsPerTile, game.At(startingTile).Count);
+            }
+
+            bool RunCommand(NetClient client, CmdType type, string token, int a = 0, int b = 0)
+            {
+                bool? result = null;
+                void Receive(int seq, bool ok, string error, int rtt) => result = ok;
+                client.CommandResult += Receive;
+                client.SendCommand(type, a, b, s: token);
+                Assert.True(Until(server, clients, () => result.HasValue));
+                client.CommandResult -= Receive;
+                return result!.Value;
+            }
+        }
+        finally
+        {
+            foreach (var client in clients) client.Dispose();
+            server.Stop();
+            if (Directory.Exists(dir)) Directory.Delete(dir, true);
+        }
+    }
+
     private static GameServer StartServer(string saveDir)
     {
         var server = new GameServer(new ServerOptions { Port = 0, Quiet = Environment.GetEnvironmentVariable("IH_LOG") == null, SaveDir = saveDir, AutosaveEvery = 5, AfkSeconds = 2 });

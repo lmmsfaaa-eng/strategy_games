@@ -45,6 +45,29 @@ public partial class DemoTour : Node
         }
         bool ok = game.Map.SelectedUnit >= 0 && w.Units.TryGetValue(game.Map.SelectedUnit, out var sel) && sel.Tile == unit.Tile;
         GD.Print(ok ? "tour: click-select OK" : $"tour: click-select FAILED (selected {game.Map.SelectedUnit})");
+
+        // Select a different member of the stack by clicking its marker without cycling the tile.
+        var target = w.UnitsAt(unit.Tile).FirstOrDefault(u => u.Owner == w.MyId && u.Id != game.Map.SelectedUnit);
+        if (target == null) return;
+        Vector2? marker = null;
+        for (int y = -96; marker == null && y <= 64; y += 6)
+            for (int x = -96; marker == null && x <= 96; x += 6)
+            {
+                var sample = pos + new Vector2(x, y);
+                if (game.Banners.UnitAt(sample) == target.Id) marker = sample;
+            }
+        if (marker is not { } at)
+        {
+            GD.PushError("tour: unit marker not found");
+            return;
+        }
+        foreach (bool pressed in new[] { true, false })
+        {
+            Input.ParseInputEvent(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = pressed, Position = at, GlobalPosition = at });
+            await Wait(0.1);
+        }
+        if (game.Map.SelectedUnit == target.Id) GD.Print("tour: badge click-select OK");
+        else GD.PushError("tour: badge click-select FAILED");
     }
 
     /// <summary>Casts "grow forest" the way a player does: pick the spell, then click a tile on the map.</summary>
@@ -146,11 +169,13 @@ public partial class DemoTour : Node
             {
                 if (w.Me.BranchCurrent[bi].Length > 0) continue;
                 var nodes = new System.Collections.Generic.HashSet<string>(w.Me.Nodes);
-                var pick = Rules.Branches[bi].Nodes.FirstOrDefault(n => !nodes.Contains(n.Id) && n.Requires.All(r => Rules.Satisfied(r, w.Me.Known, w.Me.Future, w.Me.Civics, w.Me.CivicLevel, nodes)));
+                var branch = Rules.Branches[bi];
+                if (!Rules.BranchUnlocked(branch, w.Knows(Rules.ReligionCivic), nodes, null)) continue;
+                var pick = branch.Nodes.FirstOrDefault(n => !nodes.Contains(n.Id) && n.Requires.All(r => Rules.Satisfied(r, w.Me.Known, w.Me.Future, w.Me.Civics, w.Me.CivicLevel, nodes)));
                 if (pick != null) net.SendCommand(CmdType.SetNode, s: pick.Id);
             }
             if (w.Me.Civic.Length == 0) net.SendCommand(CmdType.SetCivic, s: Rules.AvailableCivics(w.Me.Civics, w.Me.CivicLevel).OrderBy(c => c.Cost).First().Id);
-            if (w.Me.MyReligion == 0 && w.Me.Faith >= Rules.ReligionPrice(w.Me.Religions.Length) && w.Me.Religions.Length < 6)
+            if (w.Knows(Rules.ReligionCivic) && w.Me.MyReligion == 0 && w.Me.Faith >= Rules.ReligionPrice(w.Me.Religions.Length) && w.Me.Religions.Length < 6)
                 net.SendCommand(CmdType.FoundReligion, Enumerable.Range(0, 8).First(i => w.Me.Religions.All(r => r.Name != Rules.ReligionNames[i])), Enumerable.Range(0, 6).First(i => w.Me.Religions.All(r => r.Belief != i)));
             if (w.Me.Research.Length == 0 && w.Me.Available.Length > 0)
                 net.SendCommand(CmdType.SetResearch, s: w.Me.Available.OrderBy(a => a.Cost).First().Id);

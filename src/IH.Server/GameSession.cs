@@ -62,17 +62,16 @@ public sealed class GameSession
         Started = Started, Turn = Game?.S.Turn ?? 0,
     };
 
-    public int FindSlotByToken(string token) => Slots.FindIndex(s => s.Token == token);
+    public int FindSlotByToken(string token) => token.Length == 0 ? -1 : Slots.FindIndex(s => s.Token == token);
 
     // -------------------------------------------------------------- lobby
     public string? Join(Conn c)
     {
         if (Started)
         {
-            // a seat can be reclaimed by name when its owner is offline (lost token, server restarted from a save)
-            int seat = Slots.FindIndex(s => s.Conn == null && string.Equals(s.Name, c.Name, StringComparison.OrdinalIgnoreCase));
-            if (seat < 0) return "Игра уже идёт. Войти можно только на своё место (под тем же именем)";
-            Slots[seat].Token = c.Token;
+            // The display name is public. A running game's private state belongs to its seat token.
+            int seat = FindSlotByToken(c.Token);
+            if (seat < 0 || Slots[seat].Conn != null) return "Игра уже идёт. Для возвращения нужен сохранённый ключ места";
             Attach(c, seat);
             return null;
         }
@@ -98,7 +97,7 @@ public sealed class GameSession
     }
 
     /// <summary>Connection lost or the player left on purpose.</summary>
-    public void Detach(Conn c, bool voluntary)
+    public void Detach(Conn c)
     {
         int slot = c.Slot;
         c.Session = null; c.Slot = -1;
@@ -115,7 +114,6 @@ public sealed class GameSession
         }
         Slots[slot].Conn = null;
         Slots[slot].DisconnectedAt = _server.Now;
-        if (voluntary) Slots[slot].Token = ""; // no automatic resume; the seat can be reclaimed by name from the lobby
         Game!.P(slot).Connected = false;
         Flush();
     }
@@ -174,7 +172,18 @@ public sealed class GameSession
         if (Game == null) err = "Игра ещё не началась";
         else
         {
-            try { err = Game.Execute(c.Slot, m.Cmd); }
+            try
+            {
+                var cmd = m.Cmd;
+                if (cmd.Kind is CmdType.SandboxResources or CmdType.SandboxSpawn or CmdType.SandboxReveal)
+                {
+                    string? token = _server.Options.SandboxToken;
+                    err = token != null && c.Slot == _host && string.Equals(token, cmd.S, StringComparison.Ordinal)
+                        ? Game.ExecuteSandbox(c.Slot, cmd)
+                        : "Команда доступна только хосту локальной песочницы";
+                }
+                else err = Game.Execute(c.Slot, cmd);
+            }
             catch (Exception ex)
             {
                 _server.Log($"! Ошибка при выполнении команды {m.Cmd.Kind}: {ex}");

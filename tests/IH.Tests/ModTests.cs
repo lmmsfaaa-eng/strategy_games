@@ -225,6 +225,8 @@ public class ModTests
         var p = g.P(0);
         Assert.NotNull(Cmd(g, 0, CmdType.SetNode, s: "nope"));
         Assert.Contains("Письменность", Cmd(g, 0, CmdType.SetNode, s: "mg_runes"));           // needs a technology
+        Assert.Contains("Обряды предков", Cmd(g, 0, CmdType.SetNode, s: "sh_spirits"));
+        p.Civics.Add(Rules.ReligionCivic);
         Assert.Contains("Духи предков", Cmd(g, 0, CmdType.SetNode, s: "sh_herbs"));           // needs a node and a tech
         Assert.Null(Cmd(g, 0, CmdType.SetNode, s: "sh_spirits"));
         g.RefreshEconomy(p);

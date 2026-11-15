@@ -35,25 +35,19 @@ public partial class MapView : Node3D
     public readonly ClientWorld W;
     private readonly GameScreen _screen;
     private readonly Camera3D _camera = new() { Fov = 42, Near = 0.5f, Far = 600 };
+    private readonly Godot.Environment _environment;
+    private readonly bool _forwardPlus;
     private readonly Chunk[] _chunks;
     private readonly int _chunkCols;
     private readonly HashSet<int> _dirtyChunks = new();
     private readonly Dictionary<int, UnitNode> _units = new();
     private readonly Dictionary<int, CityNode> _cities = new();
     private readonly Dictionary<int, int> _moveSeq = new();
-    private readonly Dictionary<int, StandardMaterial3D> _ownerMats = new();
     private readonly List<(int tile, double until, Color color)> _flashes = new();
     private readonly ImmediateMesh _lines = new();
     private readonly StandardMaterial3D _terrainMat = new() { VertexColorUseAsAlbedo = true, VertexColorIsSrgb = true, Roughness = 1f };
-    private readonly Mesh _soldierMesh = new CylinderMesh { TopRadius = 0.2f, BottomRadius = 0.36f, Height = 0.62f, RadialSegments = 12 };
-    private readonly Mesh _headMesh = new SphereMesh { Radius = 0.17f, Height = 0.34f, RadialSegments = 10, Rings = 5 };
-    private readonly Mesh _civilMesh = new BoxMesh { Size = new Vector3(0.46f, 0.4f, 0.46f) };
-    private readonly Mesh _hullMesh = new BoxMesh { Size = new Vector3(0.36f, 0.24f, 0.95f) };
-    private readonly Mesh _sailMesh = new BoxMesh { Size = new Vector3(0.05f, 0.6f, 0.36f) };
     private readonly Mesh _ringMesh = new TorusMesh { InnerRadius = 0.5f, OuterRadius = 0.62f, Rings = 24, RingSegments = 6 };
-    private readonly Mesh _houseMesh = new BoxMesh { Size = Vector3.One };
     private readonly StandardMaterial3D _ringMat = new() { AlbedoColor = new Color(1f, 0.85f, 0.25f), ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded };
-    private readonly StandardMaterial3D _wallMat = new() { AlbedoColor = new Color(0.93f, 0.9f, 0.82f), Roughness = 1f };
 
     /// <summary>Zoom factor: 1 = default distance, smaller = further away.</summary>
     public float Zoom = 1f;
@@ -64,7 +58,8 @@ public partial class MapView : Node3D
     public int SelectedUnit = -1, HoverTile = -1;
     public List<int>? HoverPath;
     public int[] Highlight = Array.Empty<int>();
-    private bool _dirty = true, _dragging, _pressed;
+    public int UnitProjectionRevision { get; private set; }
+    private bool _dirty = true, _layoutDirty, _dragging, _pressed;
     private Vector2 _pressPos;
 
     private sealed class Chunk
@@ -76,8 +71,10 @@ public partial class MapView : Node3D
     private sealed class UnitNode
     {
         public Node3D Root = null!;
-        public MeshInstance3D Body = null!, Head = null!, Ring = null!;
-        public Label3D Label = null!;
+        public MeshInstance3D Body = null!, Ring = null!;
+        public float BodyTop;
+        public float MeshRadius, MeshHeight;
+        public Vector2 MeshCenter;
         public int Type = -1, Owner = -1;
         public Vector3 Pos;
         public readonly Queue<Vector3> Path = new();
@@ -104,21 +101,30 @@ public partial class MapView : Node3D
                 var c = new Chunk { X0 = cx * ChunkSize, Y0 = cy * ChunkSize };
                 c.Terrain = new MeshInstance3D { MaterialOverride = _terrainMat };
                 // level of detail: trees, resources and improvements disappear when the camera is far away
-                c.Decor = new MeshInstance3D { MaterialOverride = _terrainMat, VisibilityRangeEnd = 46f, VisibilityRangeEndMargin = 4f };
+                c.Decor = new MeshInstance3D { MaterialOverride = _terrainMat, VisibilityRangeEnd = 51f, VisibilityRangeEndMargin = 7f };
                 AddChild(c.Terrain); AddChild(c.Decor);
                 _chunks[cy * _chunkCols + cx] = c;
             }
 
         AddChild(_camera);
-        AddChild(new DirectionalLight3D { RotationDegrees = new Vector3(-52, 35, 0), LightEnergy = 1.05f, ShadowEnabled = false });
-        AddChild(new WorldEnvironment
+        _forwardPlus = RenderingServer.GetCurrentRenderingMethod() == "forward_plus";
+        AddChild(new DirectionalLight3D
         {
-            Environment = new Godot.Environment
-            {
-                BackgroundMode = Godot.Environment.BGMode.Color, BackgroundColor = new Color(0.043f, 0.055f, 0.086f),
-                AmbientLightSource = Godot.Environment.AmbientSource.Color, AmbientLightColor = Colors.White, AmbientLightEnergy = 0.6f,
-            },
+            RotationDegrees = new Vector3(-47, -36, 0), LightColor = Ui.Col(0xFFF0DA),
+            LightEnergy = 0.93f, ShadowEnabled = _forwardPlus, LightAngularDistance = 1.4f,
+            DirectionalShadowMode = DirectionalLight3D.ShadowMode.Parallel4Splits,
+            DirectionalShadowBlendSplits = true, DirectionalShadowMaxDistance = 92f,
         });
+        _environment = new Godot.Environment
+        {
+            BackgroundMode = Godot.Environment.BGMode.Color, BackgroundColor = Ui.Col(0x94AAB3),
+            AmbientLightSource = Godot.Environment.AmbientSource.Color, AmbientLightColor = Ui.Col(0xE0ECEA),
+            AmbientLightEnergy = 0.63f, ReflectedLightSource = Godot.Environment.ReflectionSource.Disabled,
+            SsaoEnabled = _forwardPlus, SsaoRadius = 0.42f, SsaoIntensity = 1.05f, SsaoLightAffect = 0.25f,
+            FogEnabled = true, FogMode = Godot.Environment.FogModeEnum.Depth, FogLightColor = Ui.Col(0xA2B5BD),
+            FogDepthBegin = 25f, FogDepthEnd = 230f, FogDensity = 0.62f, FogDepthCurve = 1.1f,
+        };
+        AddChild(new WorldEnvironment { Environment = _environment });
         AddChild(new MeshInstance3D
         {
             Mesh = _lines,
@@ -208,6 +214,18 @@ public partial class MapView : Node3D
         return !_camera.IsPositionBehind(p);
     }
 
+    public bool ProjectUnit(int unitId, out Vector2 screen, out bool moving)
+    {
+        screen = Vector2.Zero;
+        moving = false;
+        if (!_units.TryGetValue(unitId, out var n) || !n.Root.Visible) return false;
+        var point = n.Root.Position + Vector3.Up * (n.BodyTop + 0.02f);
+        if (_camera.IsPositionBehind(point)) return false;
+        screen = _camera.UnprojectPosition(point);
+        moving = n.Path.Count != 0 || n.Predicted >= 0;
+        return true;
+    }
+
     public void CenterOn(int tile) { Cam = Ground(tile); ApplyCamera(); }
 
     /// <summary>Centres on a tile but leaves it shifted on screen: a positive X puts the tile left of the middle.</summary>
@@ -236,8 +254,15 @@ public partial class MapView : Node3D
         var offset = new Vector3(Mathf.Sin(Yaw) * Mathf.Cos(Pitch), Mathf.Sin(Pitch), Mathf.Cos(Yaw) * Mathf.Cos(Pitch)) * d;
         _camera.Position = focus + offset;
         _camera.LookAt(focus, Vector3.Up);
+        if (_forwardPlus)
+        {
+            // Below this zoom the contact details are subpixel; relying on baked shading avoids stippled AO.
+            _environment.SsaoEnabled = Zoom > 0.28f;
+            _environment.SsaoIntensity = 1.05f * Mathf.SmoothStep(0.28f, 0.7f, Zoom);
+        }
         int lod = Zoom >= 0.7f ? 2 : Zoom >= 0.38f ? 1 : 0;
-        if (lod != Lod) { Lod = lod; _dirty = true; }
+        Lod = lod;
+        _layoutDirty = true;
         _screen.Minimap?.QueueRedraw();
     }
 
@@ -365,14 +390,14 @@ public partial class MapView : Node3D
                 if (dist <= step) { v.Pos = target; v.Path.Dequeue(); step -= dist; }
                 else { v.Pos = v.Pos.MoveToward(target, step); step = 0; }
             }
-            v.Root.Position = v.Pos;
         }
         _flashes.RemoveAll(f => f.until < now);
-        if (moving || _flashes.Count > 0 || _dirty)
+        if (moving || _layoutDirty || _flashes.Count > 0 || _dirty)
         {
             bool full = _dirty;
             _dirty = false;
-            if (full || moving) SyncUnits();
+            if (full || moving || _layoutDirty) SyncUnits();
+            _layoutDirty = false;
             if (full) SyncCities();
             DrawLines();
             if (moving || _flashes.Count > 0) OS.LowProcessorUsageMode = false;
@@ -437,32 +462,25 @@ public partial class MapView : Node3D
     // ------------------------------------------------------------- colors
     public static Color TerrainColor(in TileData t)
     {
-        if (t.Relief == Relief.Mountain) return Ui.Col(0x6B6660);
+        if (t.Relief == Relief.Mountain) return Ui.Col(0x777878);
         Color c = t.Terrain switch
         {
-            Terrain.Ocean => Ui.Col(0x1B3A6B), Terrain.Coast => Ui.Col(0x2F6FA8), Terrain.Grassland => Ui.Col(0x4E9A3B),
-            Terrain.Plains => Ui.Col(0xA8A04A), Terrain.Desert => Ui.Col(0xD9C27A), Terrain.Tundra => Ui.Col(0x8C9A8A),
-            _ => Ui.Col(0xE6EEF2),
+            Terrain.Ocean => Ui.Col(0x4A7289), Terrain.Coast => Ui.Col(0x619DA3), Terrain.Grassland => Ui.Col(0x88A96D),
+            Terrain.Plains => Ui.Col(0xB2A573), Terrain.Desert => Ui.Col(0xD2B080), Terrain.Tundra => Ui.Col(0x8F9F94),
+            _ => Ui.Col(0xD7E3E6),
         };
         if (t.Relief == Relief.Hills) c = c.Darkened(0.1f);
-        if (t.Forest) c = c.Lerp(Ui.Col(0x1F5A2A), 0.35f);
+        if (t.Forest) c = c.Lerp(Ui.Col(0x587956), 0.32f);
         return c;
     }
 
     public Color OwnerColor(int owner) => W.Players.TryGetValue(owner, out var p) ? Ui.Col(p.Color) : Colors.Gray;
 
-    private StandardMaterial3D OwnerMat(int owner)
-    {
-        if (!_ownerMats.TryGetValue(owner, out var m))
-            _ownerMats[owner] = m = new StandardMaterial3D { AlbedoColor = OwnerColor(owner), Roughness = 0.8f };
-        return m;
-    }
-
     // ------------------------------------------------------- mesh helpers
     /// <summary>Marker colour by resource class: bonus green, strategic red, luxury violet.</summary>
     public static Color ResourceColor(Resource r) => Rules.Res(r).Class switch
     {
-        ResClass.Bonus => Ui.Col(0x7BD35A), ResClass.Strategic => Ui.Col(0xE0503C), _ => Ui.Col(0xC77BEA),
+        ResClass.Bonus => Ui.Col(0x96AE68), ResClass.Strategic => Ui.Col(0xBD7863), _ => Ui.Col(0xAE88B7),
     };
 
     private void RebuildChunk(Chunk ch)
@@ -477,17 +495,19 @@ public partial class MapView : Node3D
                 if (vis == 0) continue;
                 var t = W.Tiles[idx];
                 var c = Center(idx);
-                float fog = vis == 1 ? 0.5f : 0f;
-                Color Shade(Color col) => fog > 0 ? col.Darkened(fog) : col;
+                Color Shade(Color col) => vis == 1 ? col.Lerp(Ui.Col(0x475659), 0.42f).Darkened(0.22f) : col;
                 var color = TerrainColor(t);
-                if (t.Owner >= 0) color = color.Lerp(OwnerColor(t.Owner), 0.14f);
+                float variation = Mathf.Sin(x * 0.82f + y * 0.6f) * Mathf.Cos(y * 0.7f - x * 0.21f) * 0.065f;
+                color = variation > 0 ? color.Lightened(variation) : color.Darkened(-variation);
+                if (t.Owner >= 0) color = color.Lerp(OwnerColor(t.Owner), 0.10f);
                 color = Shade(color);
-                var side = color.Darkened(0.35f);
+                var side = color.Darkened(0.28f);
 
                 for (int k = 0; k < 6; k++)
                 {
                     var a = c + Corner[k]; var b = c + Corner[(k + 1) % 6];
-                    terrain.Tri(c, a, b, Vector3.Up, color);
+                    float facet = (k + idx % 3) % 3 * 0.014f;
+                    terrain.Tri(c, a, b, Vector3.Up, color.Darkened(facet));
                     // a wall is only needed where the neighbour is lower or not drawn at all
                     int n = Neighbor(idx, DirOfCorner[k]);
                     float bottom = n >= 0 && W.Vis[n] > 0 ? Height(W.Tiles[n]) : BaseY;
@@ -497,34 +517,34 @@ public partial class MapView : Node3D
 
                 if (t.Relief == Relief.Mountain)
                 {
-                    terrain.Pyramid(c, 0.86f, 1.15f, 6, Shade(Ui.Col(0x5A5550)), Mathf.Pi / 6);
-                    terrain.Pyramid(c + new Vector3(0, 0.72f, 0), 0.33f, 0.46f, 6, Shade(Ui.Col(0xF4F6F8)), Mathf.Pi / 6);
+                    terrain.Pyramid(c, 0.86f, 1.15f, 6, Shade(Ui.Col(0x797A79)), Mathf.Pi / 6);
+                    terrain.Pyramid(c + new Vector3(0, 0.72f, 0), 0.33f, 0.46f, 6, Shade(Ui.Col(0xE2EAEB)), Mathf.Pi / 6);
                 }
-                else if (t.Relief == Relief.Hills)
+                else if (t.Relief == Relief.Hills && t.CityId < 0)
                 {
-                    terrain.Pyramid(c + new Vector3(-0.3f, 0, 0.18f), 0.5f, 0.2f, 7, Shade(TerrainColor(t).Lightened(0.08f)));
-                    terrain.Pyramid(c + new Vector3(0.32f, 0, -0.2f), 0.42f, 0.16f, 7, Shade(TerrainColor(t).Lightened(0.04f)));
+                    terrain.Column(c + new Vector3(-0.56f, 0, 0.23f), 0.29f, 0.18f, color.Lightened(0.035f), 6, 0.15f);
+                    terrain.Column(c + new Vector3(0.57f, 0, -0.19f), 0.23f, 0.14f, color.Darkened(0.02f), 5, 0.09f);
                 }
 
                 // borders: a raised strip along every edge where the owner changes
                 if (t.Owner >= 0)
                 {
-                    var bc = Shade(OwnerColor(t.Owner).Lightened(0.15f));
+                    var bc = Shade(OwnerColor(t.Owner).Lerp(Ui.Col(0xE2D3B7), 0.2f));
                     for (int d = 0; d < 6; d++)
                     {
                         int n = Neighbor(idx, d);
                         if (n >= 0 && W.Vis[n] > 0 && W.Tiles[n].Owner == t.Owner) continue;
                         var a = c + Corner[Edge[d].a] * 0.97f + new Vector3(0, 0.035f, 0);
                         var b = c + Corner[Edge[d].b] * 0.97f + new Vector3(0, 0.035f, 0);
-                        var a2 = c + Corner[Edge[d].a] * 0.8f + new Vector3(0, 0.035f, 0);
-                        var b2 = c + Corner[Edge[d].b] * 0.8f + new Vector3(0, 0.035f, 0);
+                        var a2 = c + Corner[Edge[d].a] * 0.915f + new Vector3(0, 0.035f, 0);
+                        var b2 = c + Corner[Edge[d].b] * 0.915f + new Vector3(0, 0.035f, 0);
                         terrain.Quad(a, b, b2, a2, Vector3.Up, bc);
                     }
                 }
 
                 if (t.Road && t.CityId < 0)
                 {
-                    var road = Shade(Ui.Col(0x7A5A36));
+                    var road = Shade(Ui.Col(0xA18B68));
                     var up = new Vector3(0, 0.03f, 0);
                     for (int d = 0; d < 6; d++)
                     {
@@ -538,16 +558,29 @@ public partial class MapView : Node3D
                 }
 
                 // ---- decorations (hidden at a distance)
-                if (t.Forest)
+                if (t.Forest && t.CityId < 0)
                 {
-                    var leaf = Shade(Ui.Col(0x1E5C2B));
-                    var trunkTop = new Vector3(0, 0.1f, 0);
-                    foreach (var off in new[] { new Vector3(-0.42f, 0, 0.1f), new Vector3(0.1f, 0, -0.42f), new Vector3(0.4f, 0, 0.3f), new Vector3(-0.05f, 0, 0.45f) })
+                    var leaf = Shade(Ui.Col(0x638860));
+                    float spin = idx % 11 * 0.59f;
+                    for (int tree = 0; tree < 4; tree++)
                     {
-                        // a clearing around the resource, so the trees do not hide it
-                        if (t.Resource != Resource.None && (off - new Vector3(-0.34f, 0, -0.32f)).Length() < 0.5f) continue;
-                        decor.Pyramid(c + off + trunkTop, 0.21f, 0.5f, 5, leaf);
-                        decor.Pyramid(c + off + trunkTop * 3.4f, 0.15f, 0.36f, 5, leaf.Lightened(0.08f));
+                        float angle = spin + Mathf.Tau * tree / 4;
+                        var off = new Vector3(Mathf.Cos(angle), 0, Mathf.Sin(angle)) * (tree % 2 == 0 ? 0.65f : 0.74f);
+                        if (t.Resource != Resource.None && (off - new Vector3(-0.34f, 0, -0.32f)).Length() < 0.41f) continue;
+                        var at = c + off;
+                        float height = 0.28f + (idx + 3 * tree) % 5 * 0.05f;
+                        var crown = leaf.Lerp(Shade(Ui.Col(0x9BA568)), tree * 0.17f);
+                        decor.Column(at, 0.05f, height, Shade(Ui.Col(0x806A56)), 5, 0.025f);
+                        if (t.Terrain is Terrain.Tundra or Terrain.Snow)
+                        {
+                            decor.Pyramid(at + Vector3.Up * (height * 0.42f), 0.19f, height * 1.35f, 5, crown.Darkened(0.1f), spin);
+                            decor.Pyramid(at + Vector3.Up * (height * 0.86f), 0.135f, height * 1.1f, 5, crown, spin);
+                        }
+                        else
+                        {
+                            decor.Gem(at + Vector3.Up * height, 0.18f, crown, 1.1f, 6);
+                            decor.Gem(at + Vector3.Up * (height + 0.12f) + off * 0.08f, 0.13f, crown.Lightened(0.06f), 1f, 5);
+                        }
                     }
                 }
                 if (t.Improvement != Improvement.None)
@@ -571,15 +604,14 @@ public partial class MapView : Node3D
     private UnitNode CreateUnit(UnitDto u)
     {
         var n = new UnitNode { Tile = u.Tile, Pos = Center(u.Tile), Root = new Node3D() };
-        n.Body = new MeshInstance3D();
-        n.Head = new MeshInstance3D { Mesh = _headMesh, Position = new Vector3(0, 0.74f, 0) };
-        n.Ring = new MeshInstance3D { Mesh = _ringMesh, MaterialOverride = _ringMat, Position = new Vector3(0, 0.06f, 0), Visible = false };
-        n.Label = new Label3D
+        n.Body = new MeshInstance3D { MaterialOverride = _terrainMat };
+        n.Ring = new MeshInstance3D
         {
-            Billboard = BaseMaterial3D.BillboardModeEnum.Enabled, NoDepthTest = true, FontSize = 40, OutlineSize = 12,
-            PixelSize = 0.0075f, Position = new Vector3(0, 1.2f, 0), RenderPriority = 2, OutlineRenderPriority = 1,
+            Mesh = _ringMesh, MaterialOverride = _ringMat, Position = Vector3.Up * 0.025f,
+            Scale = Vector3.One * 0.33f, Visible = false, CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
         };
-        n.Root.AddChild(n.Body); n.Root.AddChild(n.Head); n.Root.AddChild(n.Ring); n.Root.AddChild(n.Label);
+        n.Root.AddChild(n.Body);
+        n.Root.AddChild(n.Ring);
         n.Root.Position = n.Pos;
         AddChild(n.Root);
         return n;
@@ -587,51 +619,57 @@ public partial class MapView : Node3D
 
     private void SyncUnits()
     {
-        // stacks at rest show only their top unit; moving units are always shown
-        var top = new Dictionary<int, (UnitDto unit, int count)>();
-        foreach (var u in W.Units.Values)
+        UnitProjectionRevision++;
+        var stacks = W.Units.Values.Where(u => _units.ContainsKey(u.Id)).GroupBy(u =>
         {
-            if (!_units.TryGetValue(u.Id, out var v) || v.Path.Count > 0) continue;
-            if (!top.TryGetValue(u.Tile, out var cur)) { top[u.Tile] = (u, 1); continue; }
-            bool better = u.Id == SelectedUnit || (cur.unit.Id != SelectedUnit && (u.Def.Str > cur.unit.Def.Str || (u.Def.Str == cur.unit.Def.Str && u.Id < cur.unit.Id)));
-            top[u.Tile] = (better ? u : cur.unit, cur.count + 1);
-        }
-        foreach (var u in W.Units.Values)
+            var n = _units[u.Id];
+            return n.Predicted >= 0 ? n.Predicted : u.Tile;
+        });
+        foreach (var stack in stacks)
         {
-            if (!_units.TryGetValue(u.Id, out var v)) continue;
-            bool moving = v.Path.Count > 0;
-            int count = 1;
-            bool shown = moving || (top.TryGetValue(u.Tile, out var t) && t.unit.Id == u.Id && (count = t.count) > 0);
-            v.Root.Visible = shown;
-            if (!shown) continue;
-            if (!moving) { v.Pos = Center(u.Tile); v.Root.Position = v.Pos; }
-
-            if (v.Type != u.Type || v.Owner != u.Owner)
+            var units = stack.OrderBy(u => u.Id).ToArray();
+            bool city = W.Tiles[stack.Key].CityId >= 0;
+            for (int i = 0; i < units.Length; i++)
             {
-                v.Type = u.Type; v.Owner = u.Owner;
-                v.Body.Mesh = Models.Unit(u.Def, u.Owner, OwnerColor(u.Owner));
-                v.Body.MaterialOverride = _terrainMat;
-                v.Body.Position = new Vector3(0, u.Def.X.Flying ? 0.35f : 0, 0);
-                v.Body.Scale = Vector3.One * 1.15f;
-                v.Head.Visible = false;
+                var u = units[i];
+                var n = _units[u.Id];
+                if (n.Type != u.Type || n.Owner != u.Owner)
+                {
+                    n.Type = u.Type;
+                    n.Owner = u.Owner;
+                    n.Body.Mesh = Models.Unit(u.Def, u.Owner, OwnerColor(u.Owner));
+                    var bounds = n.Body.Mesh.GetAabb();
+                    n.MeshCenter = new Vector2(bounds.GetCenter().X, bounds.GetCenter().Z);
+                    n.MeshRadius = new Vector2(bounds.Size.X, bounds.Size.Z).Length() / 2;
+                    n.MeshHeight = bounds.End.Y;
+                }
+
+                // A footprint radius keeps even elongated meshes inside their own slot at every camera yaw.
+                float scale = Mathf.Min(0.4f, Mathf.Min(0.132f / n.MeshRadius, (city ? 0.215f : 0.25f) / n.MeshHeight));
+                float lift = u.Def.X.Flying ? 0.085f : 0f;
+                n.Body.Scale = Vector3.One * scale;
+                n.Body.Position = new Vector3(-n.MeshCenter.X * scale, lift, -n.MeshCenter.Y * scale);
+                n.BodyTop = n.MeshHeight * scale + lift;
+                n.Ring.Visible = u.Id == SelectedUnit;
+                Vector2 slot = FormationSlot(i, units.Length);
+                Vector2 horizontal = RightDir * slot.X + ForwardDir * slot.Y;
+                if (n.Path.Count == 0) n.Pos = Center(stack.Key);
+                n.Root.Position = n.Pos + new Vector3(horizontal.X, 0, horizontal.Y);
             }
-            bool mine = u.Owner == W.MyId, selected = u.Id == SelectedUnit;
-            v.Ring.Visible = selected;
-            v.Label.Visible = (Lod >= 1 && W.Tiles[u.Tile].CityId < 0) || selected;
-            string text = u.Def.Name.Length > 3 && Lod < 2 ? u.Def.Name[..2] : u.Def.Name;
-            if (count > 1) text += $" ×{count}";
-            if (u.Hp < 100) text += $"  {u.Hp}%";
-            if (u.Fortified) text += " ▣";
-            if (u.Work != 0) text += " ⚒";
-            if (u.Expires > 0) text += $" ⏳{u.Expires}";
-            if (u.Shield > 0) text += " ⛨";
-            if (mine && u.Def.X.Stealth) text += " ◌";
-            if (!u.Def.Sea && W.Tiles[u.Tile].IsWater) text += " ⛵";
-            v.Label.Text = text;
-            bool ready = mine && u.Moves > 0 && !u.Fortified && u.Work == 0 && u.Goto < 0;
-            v.Label.Modulate = selected ? Ui.Gold : u.Hp < 50 ? Ui.Bad : ready || !mine ? Colors.White : new Color(0.75f, 0.75f, 0.78f);
         }
     }
+
+    private static Vector2 FormationSlot(int index, int count) => count switch
+    {
+        1 => Vector2.Zero,
+        2 => new Vector2(index == 0 ? -0.22f : 0.22f, 0f),
+        _ => index switch
+        {
+            0 => new Vector2(0f, 0.29f),
+            1 => new Vector2(-0.245f, -0.145f),
+            _ => new Vector2(0.245f, -0.145f),
+        },
+    };
 
     private void SyncCities()
     {
@@ -645,7 +683,7 @@ public partial class MapView : Node3D
                 AddChild(n.Root);
                 _cities[c.Id] = n;
             }
-            int era = W.Players.TryGetValue(c.Owner, out var owner) ? owner.Era : 0;
+            int era = c.VisualEra;
             string look = $"{c.Owner}|{c.Pop}|{era}|{c.Capital}|{string.Join(',', c.Buildings)}";
             if (n.Look == look) continue;
             n.Look = look;

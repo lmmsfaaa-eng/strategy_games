@@ -184,19 +184,21 @@ public partial class GameScreen
                 Ui.H(6, new Icon(Ico.Prod, Ui.Prod, 15), Ui.Lbl(Rules.ItemName(item), 14, null, true), Ui.Spacer(),
                     Ui.Lbl($"{Math.Min(d.Prod, cost)}/{cost} · {Turns(cost - d.Prod, d.ProdRate)}", 12, Ui.Dim), remove),
                 new Bar(Ui.Prod, 7).Set(d.Prod / (float)Math.Max(1, cost), d.ProdRate / (float)Math.Max(1, cost)));
+            bool noSpace = item.StartsWith("u:") && W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
+            if (noSpace) now.AddChild(Ui.Lbl("Освободите место в гарнизоне для нового юнита.", 12, Ui.Gold));
             int price = Rules.BuyPrice(cost, d.Prod);
             if (price > 0)
             {
                 var buyRow = Ui.H(6);
                 var buy = Ui.Btn($"Купить · {price} зол.", () => Net.SendCommand(CmdType.Buy, c.Id), "Достроить немедленно за золото", 13);
-                buy.Disabled = me.Gold < price;
+                buy.Disabled = noSpace || me.Gold < price;
                 buyRow.AddChild(buy);
                 bool peaceful = item.StartsWith("b:") || Rules.Units[Rules.UnitIndex(item[2..])].Role != UnitRole.Military;
                 if (peaceful)
                 {
                     int fp = Rules.FaithPrice(cost, d.Prod);
                     var buyF = Ui.Btn($"За веру · {fp}", () => Net.SendCommand(CmdType.BuyFaith, c.Id), "Вера оплачивает здания и мирных юнитов", 13);
-                    buyF.Disabled = me.Faith < fp;
+                    buyF.Disabled = noSpace || me.Faith < fp;
                     buyRow.AddChild(buyF);
                 }
                 now.AddChild(buyRow);
@@ -334,6 +336,7 @@ public partial class GameScreen
             b.ThemeTypeVariation = id == me.Civic ? "TabOn" : "Flat";
             b.CustomMinimumSize = new Vector2(380, 0);
             var info = Ui.V(0, Ui.Lbl(c.Effect.Describe(), 12, Ui.Dim));
+            if (c.Id == Rules.ReligionCivic) info.AddChild(Ui.Lbl("Открывает религию и шаманство", 12, Ui.Faith));
             if (cost < c.Cost) info.AddChild(Ui.Lbl($"Эффект низкой базы: −{100 - cost * 100 / c.Cost}% (обычная цена {c.Cost})", 12, Ui.Good));
             Add(Ui.H(12, b, info));
         }
@@ -343,33 +346,39 @@ public partial class GameScreen
 
     private void BuildBranches()
     {
-        var me = W.Me;
         _windowTitle.Text = "Ветки развития";
-        if (Rules.Branches.Count == 0)
+        var branches = Enumerable.Range(0, Rules.Branches.Count).Where(i => Rules.Branches[i].Id != Rules.ShamanismBranch).ToArray();
+        if (branches.Length == 0)
         {
             Add(Ui.Lbl("В этой игре нет особых веток. Хост может добавить их файлами в папке модов (кнопка «Папка модов» в главном меню).", 14, Ui.Dim));
             return;
         }
-        _branchTab = Math.Clamp(_branchTab, 0, Rules.Branches.Count - 1);
+        if (!branches.Contains(_branchTab)) _branchTab = branches[0];
         var tabs = Ui.Flow(6);
-        for (int i = 0; i < Rules.Branches.Count; i++)
+        foreach (int i in branches)
         {
             int idx = i;
             var b = Rules.Branches[i];
-            int done = b.Nodes.Count(n => me.Nodes.Contains(n.Id));
+            int done = b.Nodes.Count(n => W.Me.Nodes.Contains(n.Id));
             var tb = Ui.Btn($"{b.Name} · {done}/{b.Nodes.Length}{(BranchCanPick(i) ? " · выберите узел" : "")}",
                 () => { _branchTab = idx; _windowScroll.ScrollHorizontal = 0; RebuildWindow(); }, b.Description, 14, i == _branchTab ? "TabOn" : null);
             if (i != _branchTab) tb.AddThemeColorOverride("font_color", PowerColor(i));
             tabs.AddChild(tb);
         }
         Add(tabs);
-        var br = Rules.Branches[_branchTab];
-        var color = PowerColor(_branchTab);
+        BuildBranchDetails(_branchTab);
+    }
+
+    private void BuildBranchDetails(int branchIndex)
+    {
+        var me = W.Me;
+        var br = Rules.Branches[branchIndex];
+        var color = PowerColor(branchIndex);
         float w = Math.Min(_wrapW, 900);
-        int rate = _branchTab < me.BranchRate.Length ? me.BranchRate[_branchTab] : 0;
-        int progress = _branchTab < me.BranchProgress.Length ? me.BranchProgress[_branchTab] : 0;
-        var cur = Rules.Node(_branchTab < me.BranchCurrent.Length ? me.BranchCurrent[_branchTab] : "");
-        int pool = _branchTab < me.Power.Length ? me.Power[_branchTab] : 0, poolRate = _branchTab < me.PowerRate.Length ? me.PowerRate[_branchTab] : 0;
+        int rate = branchIndex < me.BranchRate.Length ? me.BranchRate[branchIndex] : 0;
+        int progress = branchIndex < me.BranchProgress.Length ? me.BranchProgress[branchIndex] : 0;
+        var cur = Rules.Node(branchIndex < me.BranchCurrent.Length ? me.BranchCurrent[branchIndex] : "");
+        int pool = branchIndex < me.Power.Length ? me.Power[branchIndex] : 0, poolRate = branchIndex < me.PowerRate.Length ? me.PowerRate[branchIndex] : 0;
         if (br.Description.Length > 0) Note(br.Description);
 
         var summary = Ui.V(7);
@@ -384,8 +393,8 @@ public partial class GameScreen
             summary.AddChild(Ui.H(8, Ui.Lbl($"Осваивается: {cur.Name}", 14, null, true), Ui.Spacer(), Ui.Lbl($"{progress}/{cost} · {Turns(cost - progress, rate)}", 12, Ui.Dim)));
             summary.AddChild(new Bar(color, 6).Set(progress / (float)Math.Max(1, cost), rate / (float)Math.Max(1, cost)));
         }
-        else summary.AddChild(Ui.Lbl(BranchCanPick(_branchTab) ? $"Узел не выбран — очки копятся ({progress}). Нажмите на светлый узел ниже." : $"Доступных узлов сейчас нет — очки копятся ({progress}).",
-            13, BranchCanPick(_branchTab) ? Ui.Col(0xFFB3AC) : Ui.Dim));
+        else summary.AddChild(Ui.Lbl(BranchCanPick(branchIndex) ? $"Узел не выбран — очки копятся ({progress}). Нажмите на светлый узел ниже." : $"Доступных узлов сейчас нет — очки копятся ({progress}).",
+            13, BranchCanPick(branchIndex) ? Ui.Col(0xFFB3AC) : Ui.Dim));
         var total = Rules.NodeBonus(br.Nodes.Where(n => me.Nodes.Contains(n.Id)).Select(n => n.Id)).Describe();
         if (total.Length > 0) summary.AddChild(Ui.Wrap("Уже даёт: " + total, w - 30, 13, Ui.Good));
         if (br.PowerResources.Length > 0)
@@ -398,7 +407,7 @@ public partial class GameScreen
         card.SizeFlagsHorizontal = SizeFlags.ShrinkBegin;
         Add(card);
 
-        var graph = TechGraph.ForBranch(me, _branchTab, id => Net.SendCommand(CmdType.SetNode, s: id));
+        var graph = TechGraph.ForBranch(me, branchIndex, id => Net.SendCommand(CmdType.SetNode, s: id));
         graph.Accent = color;
         Add(graph);
         Note("Серый узел с подписью «нужно: …» ждёт технологию, институт или узел другой ветки. Наведите курсор, чтобы увидеть все требования и бонус.");
@@ -448,11 +457,47 @@ public partial class GameScreen
     }
 
     private int _relName, _relBelief;
+    private bool _showShamanism;
+
+    private bool BranchUnlocked(int index) => Rules.BranchUnlocked(Rules.Branches[index], W.Knows(Rules.ReligionCivic),
+        W.Me.Nodes, index < W.Me.BranchCurrent.Length ? W.Me.BranchCurrent[index] : null);
+
+    private void OpenBranch(int index)
+    {
+        if (Rules.Branches[index].Id == Rules.ShamanismBranch)
+        {
+            _showShamanism = true;
+            Toggle(Win.Religion, true);
+        }
+        else
+        {
+            _branchTab = index;
+            Toggle(Win.Branches, true);
+        }
+    }
 
     private void BuildReligion()
     {
         var me = W.Me;
         _windowTitle.Text = "Религия";
+        bool knowsRites = W.Knows(Rules.ReligionCivic);
+        int shamanism = Enumerable.Range(0, Rules.Branches.Count).FirstOrDefault(i => Rules.Branches[i].Id == Rules.ShamanismBranch, -1);
+        bool shamanismOpen = shamanism >= 0 && BranchUnlocked(shamanism);
+        if (shamanismOpen)
+        {
+            Add(Ui.Flow(6,
+                Ui.Btn("Вера и религии", () => { _showShamanism = false; _windowScroll.ScrollHorizontal = 0; RebuildWindow(); },
+                    variation: !_showShamanism ? "TabOn" : null),
+                Ui.Btn("Шаманство", () => { _showShamanism = true; _windowScroll.ScrollHorizontal = 0; RebuildWindow(); },
+                    variation: _showShamanism ? "TabOn" : null)));
+            if (_showShamanism) { BuildBranchDetails(shamanism); return; }
+        }
+        if (!knowsRites && me.MyReligion == 0)
+        {
+            Note("Примите институт «Обряды предков», чтобы основать религию, нанимать миссионеров и изучать шаманство.");
+            Add(Ui.Btn("Открыть культуру", () => Toggle(Win.Civics, true)));
+            return;
+        }
         Add(Ui.Lbl($"Вера: {me.Faith} ({Ui.Signed(me.FaithRate)} за ход). Её дают дворец, святилища, храмы и соборы; институты и реформация умножают её.", 13));
         var mine = me.Religions.FirstOrDefault(r => r.Id == me.MyReligion);
         if (mine != null)
@@ -504,7 +549,9 @@ public partial class GameScreen
             var name = Ui.Lbl($"{c.Name}: {(rel == null ? "без религии" : rel.Name)}", 14);
             name.CustomMinimumSize = new Vector2(300, 0);
             var recruit = Ui.Btn($"Нанять миссионера ({Rules.MissionaryFaith} веры)", () => Net.SendCommand(CmdType.Recruit, cid), size: 13);
-            recruit.Disabled = me.Faith < Rules.MissionaryFaith || (mine == null && rel == null);
+            bool isFull = W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
+            recruit.Disabled = isFull || me.Faith < Rules.MissionaryFaith || (mine == null && rel == null);
+            if (isFull) recruit.TooltipText = "В городе уже три юнита";
             Add(Ui.H(10, name, recruit));
         }
     }
@@ -569,8 +616,8 @@ public partial class GameScreen
             Add(Ui.Lbl($"• Раздутая империя: городов заметно больше, чем у соседей — содержание дополнительно растёт (индекс {me.Sprawl:0.00})", 14, Ui.Gold));
 
         Heading("Связи с миром");
-        Add(Ui.Lbl(me.TradeLuxuries > 0 ? $"• Торговля роскошью через открытые границы: +{me.TradeLuxuries} довольства в каждом городе (не больше {Rules.MaxTradeLuxuries})"
-            : "• Торговли роскошью нет: откройте границы с державой, у которой есть роскошь, которой нет у вас", 14, me.TradeLuxuries > 0 ? Ui.Good : Ui.Dim));
+        Add(Ui.Lbl(me.TradeLuxuries > 0 ? $"• Импорт роскоши: +{me.TradeLuxuries} довольства в каждом городе (не больше {Rules.MaxTradeLuxuries})"
+            : "• Импорт роскоши можно предложить в разделе «Державы» (F4)", 14, me.TradeLuxuries > 0 ? Ui.Good : Ui.Dim));
         Add(Ui.Lbl(me.WarWeariness > 0 ? $"• Усталость от войны: +{me.WarWeariness} брожения за ход в каждом городе (войны дольше {Rules.WarWearinessAfter} ходов)"
             : "• Усталости от войны нет", 14, me.WarWeariness > 0 ? Ui.Bad : Ui.Dim));
         var state = me.Religions.FirstOrDefault(r => r.Id == me.StateReligion);
@@ -598,23 +645,9 @@ public partial class GameScreen
         Add(cities);
     }
 
-    private void BuildDiplomacy()
+    private void BuildCongress()
     {
-        _windowTitle.Text = "Дипломатия и Всемирный конгресс";
         var me = W.Me;
-        // ---- offers come first: they wait for an answer
-        foreach (var pr in me.Proposals.Where(p => p.To == W.MyId))
-        {
-            int id = pr.Id;
-            string what = pr.Kind == (byte)ProposalKind.Peace ? "заключить мир" : "открыть границы";
-            Add(Ui.Card(Ui.H(10, new Icon(Ico.Favor, Ui.Gold, 18), Ui.Lbl($"«{W.PlayerName(pr.From)}» предлагает {what}", 15, Ui.Gold, true), Ui.Spacer(),
-                Ui.Btn("Принять", () => Net.SendCommand(CmdType.Respond, id, 1), variation: "Primary"),
-                Ui.Btn("Отклонить", () => Net.SendCommand(CmdType.Respond, id, 0))), 10, Ui.Col(0x2A2410), Ui.PanelEdge));
-        }
-        foreach (var pr in me.Proposals.Where(p => p.From == W.MyId))
-            Add(Ui.Lbl($"Ваше предложение «{W.PlayerName(pr.To)}» ({(pr.Kind == (byte)ProposalKind.Peace ? "мир" : "открытые границы")}) ожидает ответа", 13, Ui.Dim));
-
-        // ---- world congress
         Heading("Всемирный конгресс");
         var chairName = me.Chair >= 0 ? Ui.Lbl($"Председатель: «{W.PlayerName(me.Chair)}»", 15, Ui.Gold, true) : Ui.Lbl("Председатель не избран", 15, Ui.Dim, true);
         Add(Ui.H(14, chairName, Ui.Pill($"заседание через {me.CongressIn} х.", Ui.Favor), Ui.Spacer(),
@@ -651,41 +684,6 @@ public partial class GameScreen
             res.AddChild(Ui.H(10, Ui.Lbl($"за {me.VotesFor}", 13, Ui.Good), tally, Ui.Lbl($"против {me.VotesAgainst}", 13, Ui.Bad), Ui.Spacer(), yes, no));
         }
         Add(Ui.Card(res, 10));
-
-        // ---- the powers
-        Heading("Державы");
-        Note("Мирный контакт с более развитой державой даёт «научное эхо»; открытые границы усиливают его, разрешают проход и позволяют торговать роскошью.");
-        foreach (var p in W.Players.Values.Where(p => p.Id != W.MyId && !p.Neutral).OrderByDescending(p => p.Met).ThenBy(p => p.Id))
-        {
-            var color = p.Met ? Ui.Col(p.Color) : Ui.Dim;
-            var stripe = new ColorRect { Color = color, CustomMinimumSize = new Vector2(4, 34) };
-            var name = Ui.Lbl(p.Met ? p.Name : "Неизвестная цивилизация", 15, p.Met ? color.Lightened(0.3f) : Ui.Dim, true);
-            name.CustomMinimumSize = new Vector2(200, 0);
-            if (!p.Alive) { Add(Ui.Card(Ui.H(10, stripe, name, Ui.Lbl("уничтожена", 13, Ui.Dim)), 7)); continue; }
-            if (!p.Met) { Add(Ui.Card(Ui.H(10, stripe, name, Ui.Lbl("контакт не установлен — исследуйте карту", 13, Ui.Dim)), 7)); continue; }
-            string tags = (p.AI ? "ИИ" : p.Connected ? "игрок" : "игрок, не в сети") + $" · счёт {p.Score} · {Rules.EraName(p.Era)} · городов {p.Cities} · технологий {p.Techs}";
-            var status = p.AtWar ? Ui.Pill("война", Ui.Bad) : p.OpenBorders ? Ui.Pill("мир · открытые границы", Ui.Good) : Ui.Pill("мир", Ui.Good);
-            var row = Ui.H(8, stripe, Ui.V(1, Ui.H(10, name, status), Ui.Lbl(tags, 12, Ui.Dim)), Ui.Spacer());
-            int pid = p.Id;
-            if (p.AtWar) row.AddChild(Ui.Btn("Предложить мир", () => Net.SendCommand(CmdType.Propose, pid, (int)ProposalKind.Peace), size: 13));
-            else
-            {
-                row.AddChild(p.OpenBorders
-                    ? Ui.Btn("Закрыть границы", () => Net.SendCommand(CmdType.CancelBorders, pid), size: 13)
-                    : Ui.Btn("Открыть границы", () => Net.SendCommand(CmdType.Propose, pid, (int)ProposalKind.OpenBorders), size: 13));
-                row.AddChild(Ui.Btn("Объявить войну", () => Net.SendCommand(CmdType.DeclareWar, pid), size: 13, variation: "Danger"));
-            }
-            var giftGold = Ui.Btn("Дар: 50 зол.", () => Net.SendCommand(CmdType.Gift, pid, 0, 50), size: 12, variation: "Flat");
-            giftGold.Disabled = me.Gold < 50;
-            var giftFavor = Ui.Btn("Дар: 10 одобр.", () => Net.SendCommand(CmdType.Gift, pid, 1, 10), size: 12, variation: "Flat");
-            giftFavor.Disabled = me.Favor < 10;
-            row.AddChild(giftGold); row.AddChild(giftFavor);
-            foreach (var k in row.GetChildren()) if (k is Button btn) btn.SizeFlagsVertical = SizeFlags.ShrinkCenter;
-            Add(Ui.Card(row, 7));
-        }
-        var free = W.Players.Values.FirstOrDefault(p => p.Neutral);
-        if (free != null && W.Cities.Values.Any(c => c.Owner == free.Id))
-            Note("Вольные города — отделившиеся провинции сверхдержав. Они ни с кем не договариваются; их можно захватить.");
     }
 
     private void BuildDemographics()
@@ -719,23 +717,34 @@ public partial class GameScreen
         {
             grid.AddChild(Ui.Lbl(d.Key, 14));
             grid.AddChild(Ui.Lbl(d.Mine.ToString(), 14, Ui.Gold, true));
-            grid.AddChild(Ui.Lbl(d.Rank.ToString(), 14, d.Rank == 1 ? Ui.Good : null));
-            grid.AddChild(Ui.Lbl(d.Best.ToString(), 14));
-            grid.AddChild(Ui.Lbl(d.Avg.ToString(), 14));
-            grid.AddChild(Ui.Lbl(d.Worst.ToString(), 14));
+            grid.AddChild(Ui.Lbl(d.Peers > 0 ? d.Rank.ToString() : "—", 14, d.Peers > 0 && d.Rank == 1 ? Ui.Good : null));
+            grid.AddChild(Ui.Lbl(d.Peers > 0 ? d.Best.ToString() : "—", 14));
+            grid.AddChild(Ui.Lbl(d.Peers > 0 ? d.Avg.ToString() : "—", 14));
+            grid.AddChild(Ui.Lbl(d.Peers > 0 ? d.Worst.ToString() : "—", 14));
         }
         Add(grid);
 
         Heading("Известные цивилизации");
         var known = W.Players.Values.Where(p => !p.Neutral && (p.Met || p.Id == W.MyId)).OrderByDescending(p => p.Score).ToList();
-        int best = Math.Max(1, known.Count > 0 ? known.Max(p => p.Score) : 1);
+        int best = Math.Max(1, known.Where(p => p.Id == W.MyId || Shows(p, StatAccess.Territory)).Select(p => p.Score).DefaultIfEmpty(1).Max());
         foreach (var p in known)
         {
             var name = Ui.Lbl(p.Name + (p.Id == W.MyId ? " (вы)" : ""), 14, Ui.Col(p.Color).Lightened(0.3f), true);
             name.CustomMinimumSize = new Vector2(220, 0);
-            var bar = new Bar(Ui.Col(p.Color), 8, 260).Set(p.Score / (float)best);
-            bar.SizeFlagsHorizontal = SizeFlags.ShrinkBegin;
-            Add(Ui.H(12, name, bar, Ui.Lbl($"{p.Score}", 14, null, true), Ui.Lbl($"{Rules.EraName(p.Era)} · городов {p.Cities}{(p.Alive ? "" : " · уничтожена")}", 12, Ui.Dim)));
+            var row = Ui.H(12, name);
+            bool territory = p.Id == W.MyId || Shows(p, StatAccess.Territory);
+            if (territory)
+            {
+                var bar = new Bar(Ui.Col(p.Color), 8, 190).Set(p.Score / (float)best);
+                bar.SizeFlagsHorizontal = SizeFlags.ShrinkBegin;
+                row.AddChild(bar);
+                row.AddChild(Ui.Lbl($"{p.Score} оч. · городов {p.Cities}", 13));
+            }
+            if (p.Id == W.MyId || Shows(p, StatAccess.Development))
+                row.AddChild(Ui.Lbl(Rules.EraName(p.Era), 12, Ui.Dim));
+            if (!territory) row.AddChild(Ui.Lbl("Счёт закрыт", 12, Ui.Dim));
+            if (!p.Alive) row.AddChild(Ui.Lbl("Устранена", 12, Ui.Dim));
+            Add(row);
         }
     }
 
@@ -754,6 +763,7 @@ public partial class GameScreen
             keys.AddChild(Ui.Wrap(what, Math.Min(360, (_wrapW - 420) / 2), 13));
         }
         Key("ЛКМ", "выбрать юнит; ещё раз — следующий на клетке; город — его панель");
+        Key("F12", "диагностика, FPS, сеть и выбранная клетка");
         Key("ПКМ", "идти или атаковать; при открытом городе — купить клетку");
         Key("Колесо", "масштаб карты");
         Key("WASD / перетаскивание", "движение камеры");
@@ -776,9 +786,9 @@ public partial class GameScreen
             => Add(Ui.Card(Ui.H(10, new Icon(icon, color, 20), Ui.V(2, Ui.Lbl(title, 14, color, true), Ui.Wrap(text, Math.Min(_wrapW, 900) - 70, 13))), 9));
         Topic(Ico.City, Ui.Prod, "Города", "Жители обрабатывают клетки вокруг города: пища растит население, производство строит, коммерция делится на науку и золото. Рабочие улучшают клетки и подключают ресурсы: бонусные усиливают клетку, стратегические нужны для юнитов, роскошь поднимает довольство.");
         Topic(Ico.Science, Ui.Science, "Наука и культура", $"Наука открывает технологии, культура — социальные институты; оба дерева бесконечны. Они подпитывают друг друга: каждая технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.");
-        Topic(Ico.Branch, Ui.Power, "Ветки развития", "Магия, шаманство и ветки из модов растут параллельно. Узлы дают бонусы, особых юнитов, здания и действия; действия тратят силу ветки (ману, духов), которая копится от узлов, зданий и ресурсов карты.");
+        Topic(Ico.Branch, Ui.Power, "Ветки развития", "Магия и ветки из модов растут параллельно. Узлы дают бонусы, юнитов, здания и действия. Обряды предков открывают шаманство во вкладке «Религия» (F8).");
         Topic(Ico.Faith, Ui.Faith, "Религия", "Вера покупает мирные проекты и основывает религию. Верование действует в каждом городе, который ей следует; религия расходится сама и с миссионерами. Единая вера успокаивает города и сближает державы.");
-        Topic(Ico.Favor, Ui.Favor, "Дипломатия и конгресс", "Мир и открытые границы дают научное эхо и торговлю роскошью. Одобрение — это голоса: за председателя конгресса и за резолюции, которые меняют правила для всех до следующего заседания.");
+        Topic(Ico.Favor, Ui.Favor, "Державы и конгресс", "В разделе «Державы» (F4) заключают сделки, открывают границы, создают оборонительные союзы и делятся показателями. Одобрение можно обменять, потратить на разведку или отдать как голоса в конгрессе.");
         Topic(Ico.Sword, Ui.Bad, "Война", "Перед атакой наведите курсор на врага: панель покажет шанс победы и урон. Холмы, лес, укрепление и стены помогают обороне. Долгая война утомляет ваши города.");
         Topic(Ico.Chart, Ui.Good, "Анти-Сноуболл", "Игра сама сдерживает отрыв: лидер получает штрафы к науке, культуре и содержанию и рискует протестами и сепаратизмом, а отстающие — скидки на уже открытое миром и научное эхо. Положение показано в правом углу верхней панели.");
     }

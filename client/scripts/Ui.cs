@@ -6,15 +6,15 @@ namespace IH.Client;
 /// <summary>Palette, theme and small helpers for building the interface in code.</summary>
 public static class Ui
 {
-    // ---- palette: deep navy surfaces, warm gold accent, one colour per yield
-    public static readonly Color Bg = Col(0x0B0F1A);
-    public static readonly Color PanelBg = Col(0x131A2A, 0.95f);
-    public static readonly Color PanelHi = Col(0x1C2539);
-    public static readonly Color Line = Col(0x2C3854);
-    public static readonly Color PanelEdge = Col(0x8C7A45);
-    public static readonly Color Text = Col(0xE8ECF4);
-    public static readonly Color Dim = Col(0x9AA4B8);
-    public static readonly Color Gold = Col(0xF2CF63);
+    // Calm forest surfaces and parchment accents under the map's sunlight.
+    public static readonly Color Bg = Col(0x172420);
+    public static readonly Color PanelBg = Col(0x202D28, 0.96f);
+    public static readonly Color PanelHi = Col(0x304139);
+    public static readonly Color Line = Col(0x43564B);
+    public static readonly Color PanelEdge = Col(0x877958);
+    public static readonly Color Text = Col(0xF3EEE1);
+    public static readonly Color Dim = Col(0xB7C4B9);
+    public static readonly Color Gold = Col(0xEBD08A);
     public static readonly Color Science = Col(0x6FC3FF);
     public static readonly Color Culture = Col(0xC79BFF);
     public static readonly Color Faith = Col(0xF6EFC8);
@@ -27,9 +27,10 @@ public static class Ui
 
     public static Color Col(int rgb, float a = 1) => new(((rgb >> 16) & 255) / 255f, ((rgb >> 8) & 255) / 255f, (rgb & 255) / 255f, a);
 
+    private static readonly Font BodyFont = new SystemFont { FontNames = new[] { "Inter", "Segoe UI", "Noto Sans" } };
     private static Font? _bold;
     /// <summary>The default font, thickened for headings and numbers.</summary>
-    public static Font Bold => _bold ??= new FontVariation { BaseFont = ThemeDB.FallbackFont, VariationEmbolden = 0.55f };
+    public static Font Bold => _bold ??= new FontVariation { BaseFont = BodyFont, VariationEmbolden = 0.55f };
 
     public static StyleBoxFlat Box(Color bg, Color? edge = null, int radius = 6, int padX = 10, int padY = 5, int border = 1)
     {
@@ -44,8 +45,8 @@ public static class Ui
     /// <summary>One theme for the whole game: every stock control picks its look from here.</summary>
     public static Theme BuildTheme()
     {
-        var t = new Theme { DefaultFontSize = 14 };
-        var empty = new StyleBoxEmpty();
+        var t = new Theme { DefaultFontSize = 14, DefaultFont = BodyFont };
+        var focus = Box(Colors.Transparent, Gold, 6);
 
         void Button(string type, Color bg, Color hover, Color pressed, Color? edge, Color font, Color? edgeHover = null)
         {
@@ -53,32 +54,39 @@ public static class Ui
             t.SetStylebox("hover", type, Box(hover, edgeHover ?? edge));
             t.SetStylebox("pressed", type, Box(pressed, edgeHover ?? edge));
             t.SetStylebox("disabled", type, Box(new Color(bg, bg.A * 0.45f), edge == null ? null : new Color(edge.Value, 0.35f)));
-            t.SetStylebox("focus", type, empty);
+            t.SetStylebox("focus", type, focus);
             t.SetColor("font_color", type, font);
             t.SetColor("font_hover_color", type, font.Lightened(0.25f));
             t.SetColor("font_pressed_color", type, font);
             t.SetColor("font_focus_color", type, font);
             t.SetColor("font_disabled_color", type, new Color(font, 0.38f));
         }
-        Button("Button", Col(0x222C44), Col(0x2D3A59), Col(0x1A2236), Line, Text, Col(0x53658F));
-        Button("OptionButton", Col(0x222C44), Col(0x2D3A59), Col(0x1A2236), Line, Text, Col(0x53658F));
+        Button("Button", PanelHi, Col(0x40574A), Bg, Line, Text, Col(0x687F6D));
+        Button("OptionButton", PanelHi, Col(0x40574A), Bg, Line, Text, Col(0x687F6D));
         // the one action that moves the game forward
         t.SetTypeVariation("Primary", "Button");
-        Button("Primary", Col(0xC9A545), Col(0xE2BC55), Col(0xA98A38), Col(0xF6DE8E), Col(0x1B1508));
+        Button("Primary", Col(0xD5B878), Gold, Col(0xB69B61), Col(0xF1DCA7), Col(0x241E14));
         t.SetFont("font", "Primary", Bold);
         // rows in lists: quiet until hovered
         t.SetTypeVariation("Flat", "Button");
-        Button("Flat", Col(0x1A2236, 0.6f), Col(0x2A3654), Col(0x182033), null, Text);
+        Button("Flat", new Color(PanelHi, 0.6f), PanelHi, Bg, null, Text);
         // tabs of the advisor window
         t.SetTypeVariation("Tab", "Button");
-        Button("Tab", Colors.Transparent, Col(0x222C44), Col(0x1A2236), null, Dim);
+        Button("Tab", Colors.Transparent, PanelHi, Bg, null, Dim);
         t.SetTypeVariation("TabOn", "Button");
-        Button("TabOn", Col(0x2A3552), Col(0x2A3552), Col(0x2A3552), PanelEdge, Gold);
+        Button("TabOn", PanelHi, PanelHi, PanelHi, PanelEdge, Gold);
         t.SetTypeVariation("Danger", "Button");
         Button("Danger", Col(0x4A2026), Col(0x64282F), Col(0x3A181D), Col(0x8A3B40), Col(0xFFC9C4));
 
         t.SetColor("font_color", "Label", Text);
         t.SetStylebox("panel", "PanelContainer", Box(PanelBg, Line, 8, 10, 8));
+        var dialogFrame = Box(Bg, Line, 10, 10, 8);
+        dialogFrame.ExpandMarginTop = 32;
+        dialogFrame.ShadowColor = new Color(0, 0, 0, 0.35f);
+        dialogFrame.ShadowSize = 9;
+        t.SetStylebox("embedded_border", "Window", dialogFrame);
+        t.SetStylebox("embedded_unfocused_border", "Window", dialogFrame);
+        t.SetColor("title_color", "Window", Text);
 
         t.SetStylebox("normal", "LineEdit", Box(Col(0x0E1422), Line, 6, 10, 6));
         t.SetStylebox("focus", "LineEdit", Box(Col(0x0E1422), PanelEdge, 6, 10, 6));
@@ -109,7 +117,7 @@ public static class Ui
         t.SetColor("font_color", "CheckBox", Text);
         t.SetColor("font_hover_color", "CheckBox", Gold);
         t.SetColor("font_pressed_color", "CheckBox", Text);
-        t.SetStylebox("focus", "CheckBox", empty);
+        t.SetStylebox("focus", "CheckBox", focus);
         return t;
     }
 

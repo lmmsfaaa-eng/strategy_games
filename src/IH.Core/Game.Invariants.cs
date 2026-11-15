@@ -20,6 +20,7 @@ public sealed partial class Game
             var here = _at[t];
             if (here == null) continue;
             indexed += here.Count;
+            if (here.Count > Rules.MaxUnitsPerTile) Fail($"на клетке {t} больше {Rules.MaxUnitsPerTile} юнитов");
             foreach (var u in here) if (u.Tile != t) Fail($"юнит {u.Id} числится на клетке {t}, а стоит на {u.Tile}");
             if (here.Select(u => u.Owner).Distinct().Count() > 1) Fail($"на клетке {t} юниты разных владельцев");
         }
