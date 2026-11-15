@@ -6,6 +6,7 @@ public enum MsgType : byte
     Hello = 1, ListGames, CreateGame, JoinGame, LeaveGame, Ready, StartGame, Command, Chat, Ping,
     // server -> client
     Welcome = 64, LobbyList, LobbyState, GameStart, Delta, CmdResult, ChatFrom, Pong, Error,
+    Voice = 100,
 }
 
 public enum CmdType : byte
@@ -30,6 +31,8 @@ public enum CmdType : byte
     WithdrawProposal,// A=proposal id
     RespondDefense,  // A=call id, B=0 decline / 1 accept
     AutoExplore = 80, // A=unit
+    OfferContract = 81, // A=target, B=replaces incoming offer (0 for new), S=terms
+    ManageContract = 82, // A=contract id, B=ContractAction
     SandboxResources = 240, SandboxSpawn = 241, SandboxReveal = 242,
 }
 
@@ -61,6 +64,10 @@ public enum EventKind : byte
     Milestone,       // A=player, S=milestone id
     Resolution,      // S=resolution id, A=1 passed / 0 rejected, B=votes for, C=votes against
     Ranged,          // A=from tile, B=target tile, C=attacker owner, D=target owner, S="1" if the target died
+    ContractOffer = 80, // A=proposal id
+    ContractGift = 81, // S=recipient-only description
+    ContractBreach = 82, // S=public notice, without the terms
+    ContractHarm = 83, // S=recipient-only description
 }
 
 public enum ProposalKind : byte { Peace, OpenBorders, Alliance, Trade }
@@ -215,6 +222,9 @@ public sealed class PlayerDto : IWire
     public string Name = "";
     public bool AI, Alive, Connected, EndedTurn, Met, Neutral, AtWar, OpenBorders;
     public byte SharedStats, SharingStats;
+    public int Reputation = -1, SharedScience, SharedCulture;
+    public bool HasBreachedContract;
+    public string ParticipantName = "";
     public int Gold = -1, GoldRate;
     public bool Allied, Embargo, Embargoed;
     public void Sync(Wire w)
@@ -224,11 +234,12 @@ public sealed class PlayerDto : IWire
         w.B(ref AtWar); w.B(ref OpenBorders);
         w.By(ref SharedStats); w.By(ref SharingStats);
         w.B(ref Allied); w.B(ref Embargo); w.B(ref Embargoed);
+        w.I(ref Reputation); w.B(ref HasBreachedContract); w.S(ref ParticipantName);
         var access = (StatAccess)SharedStats;
         if ((access & StatAccess.Economy) != 0) { w.I(ref Gold); w.I(ref GoldRate); }
         else if (!w.Writing) { Gold = -1; GoldRate = 0; }
-        if ((access & StatAccess.Development) != 0) { w.I(ref Era); w.I(ref Techs); }
-        else if (!w.Writing) { Era = -1; Techs = -1; }
+        if ((access & StatAccess.Development) != 0) { w.I(ref Era); w.I(ref Techs); w.I(ref SharedScience); w.I(ref SharedCulture); }
+        else if (!w.Writing) { Era = -1; Techs = -1; SharedScience = SharedCulture = 0; }
         if ((access & StatAccess.Territory) != 0) { w.I(ref Cities); w.I(ref Score); }
         else if (!w.Writing) { Cities = -1; Score = -1; }
     }
@@ -272,6 +283,7 @@ public sealed class MeDto : IWire
     public int Faith, FaithRate, Favor, FavorRate, Luxuries, Chair = -1, CongressIn;
     /// <summary>Resources this empire has connected (improved inside its borders).</summary>
     public int[] Resources = Array.Empty<int>();
+    public int[] ImportedResources = Array.Empty<int>();
     /// <summary>Votes cast so far in the current congress session, indexed by player id.</summary>
     public int[] Votes = Array.Empty<int>();
     // social institutions (driven by culture) and religion
@@ -302,6 +314,8 @@ public sealed class MeDto : IWire
     public float Itr, Pressure, Lag, SciMult = 1, CulMult = 1, UpkeepMult = 1, Sprawl;
     public TechCostDto[] Available = Array.Empty<TechCostDto>();
     public ProposalDto[] Proposals = Array.Empty<ProposalDto>();
+    public ContractDto[] Contracts = Array.Empty<ContractDto>();
+    public IncomeLineDto[] IncomeLines = Array.Empty<IncomeLineDto>();
     public LuxuryAgreementDto[] LuxuryAgreements = Array.Empty<LuxuryAgreementDto>();
     public DefenseCallDto[] DefenseCalls = Array.Empty<DefenseCallDto>();
     public EspionageDto[] Espionage = Array.Empty<EspionageDto>();
@@ -313,6 +327,7 @@ public sealed class MeDto : IWire
         w.S(ref Research); w.SA(ref Known); w.IA(ref Future);
         w.F(ref Itr); w.F(ref Pressure); w.F(ref Lag); w.F(ref SciMult); w.F(ref CulMult); w.F(ref UpkeepMult); w.F(ref Sprawl);
         w.A(ref Available); w.A(ref Proposals); w.A(ref Demo);
+        w.A(ref Contracts); w.A(ref IncomeLines); w.IA(ref ImportedResources);
         w.A(ref LuxuryAgreements); w.A(ref DefenseCalls); w.A(ref Espionage);
         w.I(ref Faith); w.I(ref FaithRate); w.I(ref Favor); w.I(ref FavorRate); w.I(ref Luxuries); w.I(ref Chair); w.I(ref CongressIn);
         w.IA(ref Resources); w.IA(ref Votes);

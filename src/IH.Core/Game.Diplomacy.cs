@@ -28,7 +28,8 @@ public sealed partial class Game
     private StatAccess GrantedBy(Player owner, Player recipient) => owner.Id == recipient.Id
         ? StatAccess.All
         : owner.Alive && recipient.Alive && !owner.Neutral && !recipient.Neutral && Rel(owner.Id, recipient.Id).Met
-            ? owner.StatGrants.GetValueOrDefault(recipient.Id)
+            ? GrantedClauses(owner.Id, recipient.Id).Where(c => c.Kind == (byte)DealKind.Statistics)
+                .Aggregate(owner.StatGrants.GetValueOrDefault(recipient.Id), (mask, clause) => mask | (StatAccess)clause.Value)
             : StatAccess.None;
 
     private void StopTrade(int a, int b)
@@ -44,6 +45,7 @@ public sealed partial class Game
         if (enabled == 1)
         {
             if (!p.Embargoes.Add(id)) return null;
+            BreachContractsBetween(p.Id, id);
             StopTrade(p.Id, id);
         }
         else if (!p.Embargoes.Remove(id)) return null;
@@ -67,13 +69,13 @@ public sealed partial class Game
         if (q == null) return "С этой державой нет контакта";
         var rel = Rel(p.Id, q.Id);
         if (rel.AtWar) return "Вы уже воюете";
-        if (rel.Allied) return "Сначала расторгните оборонительный союз";
+        if (Allied(p.Id, id)) return "Сначала расторгните оборонительный союз";
         DeclareWar(p, q);
         foreach (var ally in Active.Where(ally => ally.Id != p.Id && ally.Id != q.Id).ToList())
         {
-            if (!Rel(q.Id, ally.Id).Allied) continue;
+            if (!Allied(q.Id, ally.Id)) continue;
             var relationToAggressor = Rel(ally.Id, p.Id);
-            if (relationToAggressor.AtWar || relationToAggressor.Allied) continue;
+            if (relationToAggressor.AtWar || Allied(ally.Id, p.Id)) continue;
             var call = new DefenseCall { Id = S.NextId++, Recipient = ally.Id, Ally = q.Id, Aggressor = p.Id, Expires = S.Turn + DefenseTurns };
             S.DefenseCalls.Add(call);
             Emit(EventKind.Info, s: $"«{q.Name}» призывает вас к защите от державы «{p.Name}»", only: ally.Id);
@@ -84,6 +86,7 @@ public sealed partial class Game
     private void DeclareWar(Player aggressor, Player defender)
     {
         int a = aggressor.Id, b = defender.Id;
+        BreachContractsBetween(a, b);
         var rel = Rel(a, b);
         rel.Met = true; rel.AtWar = true; rel.OpenBorders = false; rel.SinceTurn = S.Turn;
         StopTrade(a, b);
@@ -94,8 +97,8 @@ public sealed partial class Game
 
     private bool ValidDefenseCall(DefenseCall c)
         => S.Turn < c.Expires && P(c.Recipient).Alive && P(c.Ally).Alive && P(c.Aggressor).Alive
-            && Rel(c.Recipient, c.Ally).Allied && Rel(c.Ally, c.Aggressor).AtWar
-            && !Rel(c.Recipient, c.Aggressor).AtWar && !Rel(c.Recipient, c.Aggressor).Allied;
+            && Allied(c.Recipient, c.Ally) && Rel(c.Ally, c.Aggressor).AtWar
+            && !Rel(c.Recipient, c.Aggressor).AtWar && !Allied(c.Recipient, c.Aggressor);
 
     private string? CmdRespondDefense(Player p, int id, bool accept)
     {
@@ -172,7 +175,7 @@ public sealed partial class Game
         {
             ProposalKind.Peace => rel.AtWar ? null : "Вы не воюете",
             ProposalKind.OpenBorders => rel.AtWar || rel.OpenBorders ? "Сейчас нельзя открыть границы" : null,
-            ProposalKind.Alliance => rel.AtWar || rel.Allied ? "Сейчас нельзя заключить союз" : null,
+            ProposalKind.Alliance => rel.AtWar || Allied(from.Id, to.Id) ? "Сейчас нельзя заключить союз" : null,
             ProposalKind.Trade when !CanTrade(from, to) => "Торговля недоступна во время войны или эмбарго",
             ProposalKind.Trade => TradeError(from, to, pr.Offered, pr.Requested, checkRequested),
             _ => "Неизвестный вид предложения",
@@ -181,6 +184,9 @@ public sealed partial class Game
 
     private string? TradeError(Player from, Player to, TradeSide offered, TradeSide requested, bool checkRequested)
     {
+        if (offered.Clauses.Length + requested.Clauses.Length > 0 &&
+            new[] { from.Id, to.Id }.Any(pid => S.Contracts.Count(c => c.Terms.From == pid || c.Terms.To == pid) >= 32))
+            return "Слишком много действующих договоров";
         if (!CanSupplyTrade(from, to, offered, checkRequested))
             return "Предлагаемые активы недоступны или получатель не может их принять";
         if (!checkRequested) return null;
@@ -196,6 +202,10 @@ public sealed partial class Game
     private bool CanSupplyTrade(Player source, Player recipient, TradeSide side, bool verifyRecipient)
     {
         if ((side.Gold > 0 && source.Gold < side.Gold) || (side.Favor > 0 && source.Favor < side.Favor)) return false;
+        if (side.Clauses.Any(c => c.Kind == (byte)DealKind.Resource &&
+            (!HasConnectedResource(source, c.Value) || GrantedClauses(source.Id, recipient.Id)
+                .Any(active => active.Kind == c.Kind && active.Value == c.Value)))) return false;
+        if (side.HasAlliance && Allied(source.Id, recipient.Id)) return false;
         if (side.Luxury != 0 && (!HasConnectedResource(source, side.Luxury)
             || S.LuxuryAgreements.Any(x => x.From == source.Id && x.To == recipient.Id && x.Resource == side.Luxury && x.Expires > S.Turn)))
             return false;
@@ -243,6 +253,7 @@ public sealed partial class Game
                 b.Favor += pr.Offered.Favor - pr.Requested.Favor;
                 DeliverTrade(a, b, pr.Offered);
                 DeliverTrade(b, a, pr.Requested);
+                CreateContract(pr);
                 Emit(EventKind.Info, s: $"Сделка с державой «{b.Name}» заключена", only: a.Id);
                 Emit(EventKind.Info, s: $"Сделка с державой «{a.Name}» заключена", only: b.Id);
                 break;

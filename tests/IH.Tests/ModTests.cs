@@ -27,6 +27,28 @@ public class ModTests
     }
 
     [Fact]
+    public void Launcher_selection_enables_each_example_independently()
+    {
+        string dir = TempDir();
+        try
+        {
+            string selection = Path.Combine(dir, "launcher-selection.json");
+            Assert.Empty(ModLoader.Load(dir, selection: selection));
+            ModLoader.Export(dir);
+            Assert.Empty(ModLoader.Load(dir, selection: selection));
+            File.WriteAllText(selection, "[\"magic.json\"]");
+            var magic = Assert.Single(ModLoader.Load(dir, selection: selection));
+            Assert.Equal("magic", magic.Id);
+            Assert.True(magic.Enabled);
+            File.WriteAllText(selection, "[\"shamanism.json\"]");
+            var shamanism = Assert.Single(ModLoader.Load(dir, selection: selection));
+            Assert.Equal("shamanism", shamanism.Id);
+            Assert.True(shamanism.Enabled);
+        }
+        finally { Directory.Delete(dir, true); }
+    }
+
+    [Fact]
     public void Built_in_branches_are_valid_and_cross_linked()
     {
         var all = Rules.DefaultBranches();
@@ -49,10 +71,10 @@ public class ModTests
         try
         {
             var log = new List<string>();
-            Assert.Equal(2, ModLoader.Load(Path.Combine(dir, "missing"), log.Add).Count);      // no folder: built-ins only
+            Assert.Equal(2, ModLoader.Load(Path.Combine(dir, "missing"), log.Add, legacy: true).Count);      // no folder: built-ins only
 
             File.WriteAllText(Path.Combine(dir, "necromancy.json"), Necromancy);
-            var loaded = ModLoader.Load(dir, log.Add);
+            var loaded = ModLoader.Load(dir, log.Add, legacy: true);
             Assert.Equal(3, loaded.Count);
             var nc = loaded.Single(b => b.Id == "necromancy");
             Assert.Equal("Тёмные обряды", nc.Nodes[1].Name);
@@ -65,7 +87,7 @@ public class ModTests
             ModLoader.Export(dir);
             Assert.True(File.Exists(Path.Combine(dir, "examples", "magic.json")));
             Assert.False(File.Exists(Path.Combine(dir, "magic.json")));
-            Assert.Equal(3, ModLoader.Load(dir).Count);
+            Assert.Equal(3, ModLoader.Load(dir, legacy: true).Count);
             var magic = ModLoader.Parse(File.ReadAllText(Path.Combine(dir, "examples", "magic.json")));
             Assert.Empty(ModLoader.Validate(magic, Rules.DefaultBranches()));
 
@@ -74,13 +96,13 @@ public class ModTests
             stale.Version = 0; stale.Name = "Старая магия";
             File.WriteAllText(Path.Combine(dir, "magic.json"), ModLoader.ToJson(stale));
             log.Clear();
-            Assert.Equal("Магия", ModLoader.Load(dir, log.Add).Single(b => b.Id == "magic").Name);
+            Assert.Equal("Магия", ModLoader.Load(dir, log.Add, legacy: true).Single(b => b.Id == "magic").Name);
             Assert.Contains(log, l => l.Contains("устаревшая"));
 
             // a current copy with the same id replaces the built-in
             magic.Name = "Чародейство"; magic.Nodes[0].Cost = 7;
             File.WriteAllText(Path.Combine(dir, "magic.json"), ModLoader.ToJson(magic));
-            loaded = ModLoader.Load(dir);
+            loaded = ModLoader.Load(dir, legacy: true);
             Assert.Equal(3, loaded.Count);
             Assert.Equal("Чародейство", loaded.Single(b => b.Id == "magic").Name);
             Assert.Equal(7, loaded.Single(b => b.Id == "magic").Nodes[0].Cost);
@@ -90,9 +112,9 @@ public class ModTests
             sham.Enabled = false;
             File.WriteAllText(Path.Combine(dir, "shamanism.json"), ModLoader.ToJson(sham));
             log.Clear();
-            loaded = ModLoader.Load(dir, log.Add);
-            Assert.DoesNotContain(loaded, b => b.Enabled);
-            Assert.Contains(log, l => l.Contains("отключена") && l.Contains("Чародейство"));
+            loaded = ModLoader.Load(dir, log.Add, legacy: true);
+            Assert.True(loaded.Single(b => b.Id == "magic").Enabled);
+            Assert.Contains(log, l => l.Contains("отключена") && l.Contains("Некромантия"));
         }
         finally { Directory.Delete(dir, true); }
     }
@@ -113,7 +135,7 @@ public class ModTests
         {
             File.WriteAllText(Path.Combine(dir, "bad.json"), json);
             var log = new List<string>();
-            var loaded = ModLoader.Load(dir, log.Add);
+            var loaded = ModLoader.Load(dir, log.Add, legacy: true);
             Assert.Equal(2, loaded.Count);                                 // the game still starts with the built-ins
             Assert.Contains(log, l => l.Contains("bad.json"));
             Assert.Contains(log, l => l.Contains(expected));
@@ -184,7 +206,7 @@ public class ModTests
         {
             File.WriteAllText(Path.Combine(dir, "bad.json"), json);
             var log = new List<string>();
-            Assert.Equal(2, ModLoader.Load(dir, log.Add).Count);
+            Assert.Equal(2, ModLoader.Load(dir, log.Add, legacy: true).Count);
             Assert.Contains(log, l => l.Contains(expected));
         }
         finally { Directory.Delete(dir, true); }
@@ -203,7 +225,7 @@ public class ModTests
                   "Buildings": [ { "Id": "crypt", "Name": "Склеп", "Requires": "nc_bones", "Cost": 60, "Faith": 2, "Calm": 1 } ],
                   "Actions": [ { "Id": "nc_raise", "Name": "Поднять павших", "Requires": "nc_bones", "Kind": "Heal", "Amount": 25, "CostFaith": 20, "Cooldown": 5 } ] }
                 """);
-            var nc = ModLoader.Load(dir).Single(b => b.Id == "necromancy");
+            var nc = ModLoader.Load(dir, legacy: true).Single(b => b.Id == "necromancy");
             Assert.Equal("Скелет", nc.Units.Single().Name);
             Assert.Equal(1, nc.Units.Single().Moves);                       // default
             Assert.Equal(2, nc.Buildings.Single().Faith);

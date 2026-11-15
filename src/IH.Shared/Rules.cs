@@ -920,94 +920,37 @@ public static class Rules
     public const double Inspiration = 0.15;
     public const int MaxTradeLuxuries = 3, WarWearinessAfter = 10;
 
-    private static NodeDef N(string id, string name, int cost, Bonus effect, int power, params string[] requires)
-        => new() { Id = id, Name = name, Cost = cost, Effect = effect, Power = power, Requires = requires };
-
-    /// <summary>The two branches that ship with the game; they double as examples for writing your own.</summary>
-    public static List<BranchDef> DefaultBranches() => new()
+    private static readonly System.Text.Json.JsonSerializerOptions BranchJson = new()
     {
-        // Shamanism: nature, spirits and support. Shamans heal, grow forests and call spirits; werebeasts thrive in woods.
-        new BranchDef
-        {
-            Id = ShamanismBranch, Name = "Шаманство", FromFaith = 1f, FromCulture = 0.5f, PowerName = "Духи", Version = BuiltInVersion,
-            PowerResources = new[] { "Furs", "Incense", "Honey", "Truffles", "Deer", "Ivory" },
-            Description = "Природа, духи и поддержка. Шаманы лечат войска, выращивают леса и призывают духов; оборотни сильны в лесу.",
-            Nodes = new[]
-            {
-                N("sh_spirits", "Духи предков", 30, new Bonus { Happy = 1 }, 1),
-                N("sh_herbs", "Травничество", 50, new Bonus { Food = 1 }, 0, "sh_spirits", "agriculture"),
-                N("sh_totems", "Тотемы", 60, new Bonus { CulPct = 10 }, 0, "sh_spirits", "c_tribal"),
-                N("sh_trance", "Транс и видения", 110, new Bonus { FaithPct = 25 }, 1, "sh_herbs", "sh_totems"),
-                N("sh_beast", "Звериный облик", 160, new Bonus { StrPct = 5 }, 0, "sh_trance", "hunting"),
-                N("sh_weather", "Заклинание погоды", 260, new Bonus { Food = 1, ProdPct = 5 }, 1, "sh_trance", "c_rites"),
-                N("sh_council", "Совет предков", 420, new Bonus { Calm = 2, Favor = 1 }, 2, "sh_weather", "sh_beast"),
-            },
-            Units = new[]
-            {
-                new ModUnit { Id = "shaman", Name = "Шаман", Requires = "sh_spirits", Cost = 35, Str = 2, Moves = 2, HealAura = 10 },
-                new ModUnit { Id = "spirit", Name = "Дух-страж", Requires = "sh_trance", Cost = 40, Str = 4, Moves = 2, Flying = true, FearPct = 20, SummonOnly = true },
-                new ModUnit { Id = "werebeast", Name = "Оборотень", Requires = "sh_beast", Cost = 50, Str = 5, Moves = 2, ForestPct = 50, Regen = 10, Lifesteal = 15 },
-            },
-            Buildings = new[]
-            {
-                new ModBuilding { Id = "herbalist", Name = "Хижина травника", Requires = "sh_herbs", Cost = 50, Food = 1, Happy = 1, UnitHeal = 20 },
-                new ModBuilding { Id = "totem_pole", Name = "Тотемный столб", Requires = "sh_totems", Cost = 35, Culture = 1, Faith = 1, Power = 1, AuraDefPct = 25, AuraRange = 2 },
-                new ModBuilding { Id = "stone_circle", Name = "Круг камней", Requires = "sh_trance", Cost = 90, Power = 2, Calm = 1 },
-            },
-            Actions = new[]
-            {
-                new ActionDef { Id = "sh_soothe", Name = "Умиротворение духов", Requires = "sh_spirits", Kind = "Calm", Amount = 30, CostPower = 4, Cooldown = 8 },
-                new ActionDef { Id = "sh_heal", Name = "Исцеляющий обряд", Requires = "sh_herbs", Caster = "shaman", Kind = "HealArea", Amount = 40, Range = 2, CostPower = 3, Cooldown = 3 },
-                new ActionDef { Id = "sh_grow", Name = "Рост леса", Requires = "sh_totems", Caster = "shaman", Target = "Tile", Kind = "Forest", Range = 2, Amount = 1, CostPower = 4, Cooldown = 2 },
-                new ActionDef { Id = "sh_summon", Name = "Призыв духа", Requires = "sh_trance", Caster = "shaman", Target = "Tile", Kind = "Summon", Unit = "spirit", Range = 1, Amount = 1, Duration = 8, CostPower = 6, Cooldown = 5 },
-                new ActionDef { Id = "sh_rain", Name = "Призыв дождя", Requires = "sh_weather", Target = "City", Kind = "Bless", Stat = "Food", Amount = 50, Duration = 6, CostPower = 6, Cooldown = 10 },
-            },
-        },
-        // Magic: ranged damage, constructs and economy. Battle mages bombard from afar; towers shell besiegers.
-        new BranchDef
-        {
-            Id = "magic", Name = "Магия", FromScience = 0.4f, FromFaith = 0.6f, PowerName = "Мана", Version = BuiltInVersion,
-            PowerResources = new[] { "Mercury", "Gypsum", "Silver", "Diamonds", "Amber", "Jade" },
-            Description = "Дальний урон, конструкты и экономика. Боевые маги бьют издалека, башни обстреливают осаждающих, големы не требуют содержания.",
-            Nodes = new[]
-            {
-                N("mg_runes", "Руны", 40, new Bonus { SciPct = 5 }, 1, "writing"),
-                N("mg_alchemy", "Алхимия", 80, new Bonus { GoldPct = 10 }, 0, "mg_runes", "sh_herbs"),
-                N("mg_elements", "Стихийная магия", 120, new Bonus { ProdPct = 5 }, 1, "mg_runes"),
-                N("mg_wards", "Обереги", 150, new Bonus { UpkeepCutPct = 10 }, 0, "mg_runes", "masonry"),
-                N("mg_divination", "Прорицание", 220, new Bonus { SciPct = 10, Favor = 1 }, 1, "mg_alchemy", "sh_trance"),
-                N("mg_enchant", "Зачарование оружия", 300, new Bonus { StrPct = 15 }, 0, "mg_elements", "iron_working"),
-                N("mg_academy", "Академия магов", 520, new Bonus { SciPct = 15, CulPct = 10 }, 2, "mg_divination", "mg_enchant", "education"),
-                N("mg_arcane", "Высшая магия", 900, new Bonus { SciPct = 10, GoldPct = 10, ProdPct = 10, Happy = 1 }, 3, "mg_academy", "c_humanism"),
-            },
-            Units = new[]
-            {
-                new ModUnit { Id = "familiar", Name = "Фамильяр", Requires = "mg_runes", Cost = 30, Str = 1, Moves = 2, Sight = 2, Stealth = true, Flying = true },
-                new ModUnit { Id = "battle_mage", Name = "Боевой маг", Requires = "mg_elements", Cost = 60, Str = 3, Moves = 1, Ranged = 2, RangedStr = 7 },
-                new ModUnit { Id = "golem", Name = "Голем", Requires = "mg_wards", Cost = 55, Str = 6, Moves = 1, CityDefPct = 50, Construct = true, Needs = "Stone" },
-            },
-            Buildings = new[]
-            {
-                new ModBuilding { Id = "mage_tower", Name = "Башня мага", Requires = "mg_runes", Cost = 80, SciPct = 10, Power = 2, Bombard = 15, BombardRange = 2, Upkeep = 1 },
-                new ModBuilding { Id = "alchemy_lab", Name = "Алхимическая лаборатория", Requires = "mg_alchemy", Cost = 90, GoldPct = 15, Power = 1, Upkeep = 1 },
-            },
-            Actions = new[]
-            {
-                new ActionDef { Id = "mg_transmute", Name = "Трансмутация", Requires = "mg_alchemy", Kind = "Gold", Amount = 60, CostPower = 5, Cooldown = 8 },
-                new ActionDef { Id = "mg_fireball", Name = "Огненный шар", Requires = "mg_elements", Caster = "battle_mage", Target = "Tile", Kind = "Damage", Amount = 35, Range = 3, Radius = 1, CostPower = 5, Cooldown = 2 },
-                new ActionDef { Id = "mg_shield", Name = "Магический щит", Requires = "mg_wards", Caster = "battle_mage", Target = "Tile", Kind = "Shield", Amount = 50, Range = 2, Duration = 3, CostPower = 3, Cooldown = 2 },
-                new ActionDef { Id = "mg_teleport", Name = "Телепорт", Requires = "mg_divination", Caster = "battle_mage", Target = "City", Kind = "Teleport", Amount = 1, CostPower = 8, Cooldown = 6 },
-                new ActionDef { Id = "mg_insight", Name = "Прозрение", Requires = "mg_divination", Kind = "Reveal", Amount = 8, CostPower = 6, Cooldown = 12 },
-            },
-        },
+        IncludeFields = true, PropertyNameCaseInsensitive = true,
     };
+
+    public static List<BranchDef> ExampleBranches() => new() { ReadExample("shamanism"), ReadExample("magic") };
+
+    private static BranchDef ReadExample(string id)
+    {
+        using var stream = typeof(Rules).Assembly.GetManifestResourceStream($"IH.ModExamples.{id}.json")
+            ?? throw new InvalidDataException($"Missing mod example {id}");
+        return System.Text.Json.JsonSerializer.Deserialize<BranchDef>(stream, BranchJson)
+            ?? throw new InvalidDataException($"Empty mod example {id}");
+    }
+
+    // Build-21 saves stored unit indices and implied these definitions. Keep their original dependencies.
+    public static List<BranchDef> DefaultBranches()
+    {
+        var branches = ExampleBranches();
+        var magic = branches.Single(b => b.Id == "magic");
+        magic.Nodes.Single(n => n.Id == "mg_alchemy").Requires = new[] { "mg_runes", "sh_herbs" };
+        magic.Nodes.Single(n => n.Id == "mg_divination").Requires = new[] { "mg_alchemy", "sh_trance" };
+        return branches;
+    }
 
     /// <summary>Branches in effect. The server sets them from its mods folder; clients receive them when a game starts.</summary>
     public static IReadOnlyList<BranchDef> Branches { get; private set; } = Array.Empty<BranchDef>();
     public static IReadOnlyList<ActionDef> Actions { get; private set; } = Array.Empty<ActionDef>();
     private static Dictionary<string, NodeDef> _nodes = new();
 
-    static Rules() => SetBranches(DefaultBranches());
+    static Rules() => SetBranches(Array.Empty<BranchDef>());
 
     public static void SetBranches(IEnumerable<BranchDef> branches)
     {

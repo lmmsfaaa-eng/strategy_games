@@ -19,6 +19,7 @@ public partial class GameScreen
         RefreshUnit();
         RefreshOdds();
         RefreshNationHud();
+        RefreshAvatars();
         // the city panel takes the right edge, so the log and the reminders step aside
         bool city = _win == Win.City;
         _logPanel.Visible = !city;
@@ -36,6 +37,11 @@ public partial class GameScreen
         _culture.Set($"+{me.CultureRate}");
         _faith.Set(me.Faith.ToString(), Ui.Signed(me.FaithRate));
         _favor.Set(me.Favor.ToString(), Ui.Signed(me.FavorRate));
+        IncomeTip(_gold, "gold", "Золото", me.GoldRate);
+        IncomeTip(_science, "science", "Наука", me.SciRate);
+        IncomeTip(_culture, "culture", "Культура", me.CultureRate);
+        IncomeTip(_faith, "faith", "Вера", me.FaithRate);
+        IncomeTip(_favor, "favor", "Одобрение", me.FavorRate);
         for (int i = 0; i < _power.Count; i++)
         {
             int have = i < me.Power.Length ? me.Power[i] : 0, rate = i < me.PowerRate.Length ? me.PowerRate[i] : 0;
@@ -43,6 +49,7 @@ public partial class GameScreen
             bool started = have > 0 || rate > 0 || Rules.Branches[i].Nodes.Any(n => me.Nodes.Contains(n.Id));
             _power[i].Visible = started;
             _power[i].Set(have.ToString(), rate > 0 ? $"+{rate}" : "");
+            IncomeTip(_power[i], Rules.Branches[i].Id, Rules.Branches[i].PowerName, rate);
         }
 
         Color tint;
@@ -54,6 +61,13 @@ public partial class GameScreen
         _itr.TooltipText = $"Анти-Сноуболл. Индекс технологического разрыва (ITR): {me.Itr:+0.00;−0.00}\n" +
                            $"Наука ×{me.SciMult:0.00}, культура ×{me.CulMult:0.00}, содержание ×{me.UpkeepMult:0.00}\n" +
                            "Лидер платит штрафы, отстающий получает скидки и «научное эхо». Нажмите — подробности в «Экономике»";
+    }
+
+    private void IncomeTip(Chip chip, string resource, string title, int total)
+    {
+        string detail = string.Join("\n", W.Me.IncomeLines.Where(line => line.Resource == resource)
+            .Select(line => $"{line.Source} {Ui.Signed(line.Delta)}"));
+        chip.TooltipText = $"{title} за ход {Ui.Signed(total)}" + (detail.Length == 0 ? "" : "\n" + detail);
     }
 
     // ---------------------------------------------------------- trackers
@@ -363,19 +377,19 @@ public partial class GameScreen
         first.AddChild(new Chip(Ico.Prod, Ui.Prod, "", 12).Set(p.ToString()));
         first.AddChild(new Chip(Ico.Gold, Ui.Gold, "", 12).Set(c.ToString()));
         _tileBox.AddChild(first);
-        var second = Ui.H(8);
+        var second = Ui.V(2);
         if (t.Resource != Resource.None)
         {
             var rd = Rules.Res(t.Resource);
             string cls = rd.Class switch { ResClass.Bonus => "бонус", ResClass.Strategic => "стратегический", _ => "роскошь" };
             bool worked = (int)t.Improvement == (int)rd.Imp;
             var res = Ui.Lbl($"◆ {rd.Name} ({cls}{(worked ? "" : ", нужно: " + Rules.WorkName(rd.Imp).ToLower())})", 12, MapView.ResourceColor(t.Resource).Lightened(0.25f));
-            res.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+            res.AutowrapMode = TextServer.AutowrapMode.WordSmart;
+            res.CustomMinimumSize = new Vector2(230, 0);
             res.SizeFlagsHorizontal = SizeFlags.ExpandFill;
             second.AddChild(res);
         }
-        else second.AddChild(Ui.Spacer());
-        if (t.Owner >= 0) second.AddChild(Ui.Lbl(W.PlayerName(t.Owner), 12, Map.OwnerColor(t.Owner).Lightened(0.3f)));
+        if (t.Owner >= 0) second.AddChild(Ui.Wrap(W.PlayerName(t.Owner), 230, 12, Map.OwnerColor(t.Owner).Lightened(0.3f)));
         else if (W.Vis[tile] == 1) second.AddChild(Ui.Lbl("туман войны", 12, Ui.Dim));
         _tileBox.AddChild(second);
     }

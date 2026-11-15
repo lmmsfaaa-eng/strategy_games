@@ -13,7 +13,8 @@ public static class LocalServer
     public static bool Running => _pid > 0 && OS.IsProcessRunning(_pid);
     public static string SaveDir => OS.GetUserDataDir().PathJoin("saves");
     /// <summary>Custom branch files; kept in the user's data folder so game updates never touch them.</summary>
-    public static string ModsDir => OS.GetUserDataDir().PathJoin("mods");
+    public static string ModsDir => OS.HasEnvironment("IH_MODS_DIR") ? OS.GetEnvironment("IH_MODS_DIR") : OS.GetUserDataDir().PathJoin("mods");
+    public static string ModSelection => OS.HasEnvironment("IH_MOD_SELECTION") ? OS.GetEnvironment("IH_MOD_SELECTION") : ModsDir.PathJoin("launcher-selection.json");
 
     /// <summary>Program and leading arguments, or null when no server build can be found.</summary>
     private static (string program, string[] args)? Locate()
@@ -62,6 +63,7 @@ public static class LocalServer
         var args = found.Value.args.ToList();
         // the server dies with the client, so save every turn
         args.AddRange(new[] { "--port", port.ToString(), "--saves", SaveDir, "--autosave", "1", "--mods", ModsDir });
+        args.AddRange(new[] { "--mod-selection", ModSelection });
         SandboxToken = sandbox ? System.Guid.NewGuid().ToString("N") : null;
         if (SandboxToken != null) args.AddRange(new[] { "--sandbox-token", SandboxToken });
         _startupErrorFile = null;

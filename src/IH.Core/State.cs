@@ -68,18 +68,24 @@ public sealed class Player
     public string Name = "";
     public bool IsAI, Alive = true, Neutral, EndedTurn;
     public int Gold = 30, Slider = 70, ResearchProgress;
-    public string? Research, ResearchGoal;
+    public string? Research;
+    public List<string> ResearchQueue = new();
+    public string? ResearchGoal; // build-21 save migration
     public HashSet<string> Known = new();
     public int[] Future = new int[4];
     public long TechPoints;
     public double SciFrac;
     public int Faith, Favor, Luxuries;
     public Dictionary<int, StatAccess> StatGrants = new();
+    public int Reputation = -1, LastReputationCredit = -10;
+    public bool HasBreachedContract;
     public HashSet<int> Embargoes = new();
     public List<EspionageDto> Espionage = new();
     // social institutions
     public HashSet<string> Civics = new();
-    public string? Civic, CivicGoal;
+    public string? Civic;
+    public List<string> CivicQueue = new();
+    public string? CivicGoal; // build-21 save migration
     public int CivicLevel, CivicProgress;
     public double CultureRate;
     /// <summary>Sum of all adopted institutions (derived every refresh).</summary>
@@ -92,7 +98,8 @@ public sealed class Player
     public double FaithRate, FavorRate;
     /// <summary>Resources connected by this empire (derived every refresh).</summary>
     public List<int> Resources = new();
-    public bool HasResource(Resource r) => r == Resource.None || Resources.Contains((int)r);
+    public List<int> ImportedResources = new();
+    public bool HasResource(Resource r) => r == Resource.None || Resources.Contains((int)r) || ImportedResources.Contains((int)r);
     /// <summary>Handicap: multiplier on production and commerce (1 = normal). Used for AI difficulty and balance experiments.</summary>
     public double Bonus = 1;
     public bool Connected = true;
@@ -131,6 +138,12 @@ public sealed class Proposal
     public TradeSide Offered = new(), Requested = new();
 }
 
+public sealed class ActiveContract
+{
+    public ContractDto Terms = new();
+    public int LastCreditFrom, LastCreditTo;
+}
+
 public sealed class DefenseCall
 {
     public int Id, Recipient, Ally, Aggressor, Expires;
@@ -138,6 +151,7 @@ public sealed class DefenseCall
 
 public sealed class GameState
 {
+    public int ContractFormat;
     public GameSettings Settings = new();
     public BalanceConfig Balance = new();
     public int W, H, Turn = 1, CurrentPlayer, NextId = 1;
@@ -150,6 +164,7 @@ public sealed class GameState
     public Dictionary<int, Relation> Relations = new();
     public List<Proposal> Proposals = new();
     public List<LuxuryAgreementDto> LuxuryAgreements = new();
+    public List<ActiveContract> Contracts = new();
     public List<DefenseCall> DefenseCalls = new();
     /// <summary>World congress: favor spent per candidate this session, and the current chair.</summary>
     public Dictionary<int, int> Votes = new();

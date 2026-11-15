@@ -135,6 +135,7 @@ public sealed partial class Game
         foreach (var c in CitiesOf(Neutral.Id)) c.Culture += 1;
         RecomputeBorders();
         SpreadReligion();
+        TickContracts();
         foreach (var p in Active) RefreshEconomy(p);
         AntiSnowball.Recompute(this);
         foreach (var p in Active) RefreshEconomy(p);
@@ -163,6 +164,7 @@ public sealed partial class Game
                 connected.Add((int)t.Resource);
         }
         p.Resources = connected.ToList();
+        p.ImportedResources = ContractImports(p.Id).ToList();
         p.Luxuries = connected.Count(r => Rules.Res((Resource)r).Class == ResClass.Luxury);
         // Links to other players: negotiated imports, long wars, shared faith.
         var agreements = S.LuxuryAgreements.Where(x => (x.From == p.Id || x.To == p.Id) && ValidLuxuryAgreement(x)).ToArray();
@@ -177,7 +179,8 @@ public sealed partial class Game
             if (rel.Met && SameFaith(p.Id, o.Id)) brethren++;
             if (rel.OpenBorders && CanTrade(p, o)) freeTradePartner = true;
         }
-        p.TradeLuxuries = Math.Min(Rules.MaxTradeLuxuries, foreignLux.Count());
+        p.TradeLuxuries = Math.Min(Rules.MaxTradeLuxuries, foreignLux.Concat(p.ImportedResources
+            .Where(r => !connected.Contains(r) && Rules.Res((Resource)r).Class == ResClass.Luxury)).Distinct().Count());
         p.WarWeariness = Math.Min(3, weariness);
         p.Brethren = brethren;
         bool chair = S.Chair == p.Id;
@@ -535,15 +538,27 @@ public sealed partial class Game
         c.Prod += c.ProdRate;
         int cost = Rules.ItemCost(item);
         if (c.Prod < cost) return;
-        if (item.StartsWith("u:"))
+        int type = item.StartsWith("u:") ? Rules.UnitIndex(item[2..]) : -1;
+        if (type >= 0 && UnitProductionError(p, c, type) != null)
         {
-            int type = Rules.UnitIndex(item[2..]);
-            if (!HasUnitSpace(p.Id, c.Tile)) { c.Prod = cost; return; }
-            if (Rules.Units[type].Role == UnitRole.Settler)
-            {
-                if (c.Pop < 2) { c.Prod = cost; return; } // waits until the city can spare a citizen
-                c.Pop--;
-            }
+            c.Prod = cost;
+            return;
+        }
+        CompleteProduction(p, c, item, cost, type);
+    }
+
+    private string? UnitProductionError(Player p, City c, int type)
+    {
+        if (!HasUnitSpace(p.Id, c.Tile)) return "В городе нет места для нового юнита";
+        if (Rules.Units[type].Role == UnitRole.Settler && c.Pop < 2) return "Для поселенца нужно население не меньше 2";
+        return null;
+    }
+
+    private void CompleteProduction(Player p, City c, string item, int cost, int type)
+    {
+        if (type >= 0)
+        {
+            if (Rules.Units[type].Role == UnitRole.Settler) c.Pop--;
             AddUnit(p.Id, type, c.Tile).Moves = 0;
         }
         else c.Buildings.Add(item[2..]);

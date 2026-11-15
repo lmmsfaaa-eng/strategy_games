@@ -136,7 +136,7 @@ public partial class CityBanners : Control
 
     private void DrawRouteArrival(MapView map)
     {
-        if (_screen.IsAiming || map.HoverTurns == 0 || map.HoverTile < 0 ||
+        if (_screen.IsAiming || _screen.CityFocused || map.HoverTurns == 0 || map.HoverTile < 0 ||
             !map.ProjectHovered(0.28f, out var anchor)) return;
         var viewport = new Rect2(Vector2.Zero, Size);
         const float radius = 13f;

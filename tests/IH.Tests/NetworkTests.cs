@@ -336,6 +336,13 @@ public class NetworkTests
             for (int i = 0; i < 100 && (a.World == null || b.World == null); i++) Run(100);
             Assert.NotNull(a.World); Assert.NotNull(b.World);
             Assert.NotEqual(a.World!.MyId, b.World!.MyId);
+            var audio = new byte[VoiceWire.PcmBytes];
+            audio[0] = 12; audio[^1] = 34;
+            bool heard = false;
+            b.VoiceReceived += (speaker, sequence, frame) =>
+                heard = speaker == a.World.MyId && sequence == 1 && frame.Span.SequenceEqual(audio);
+            for (int i = 0; i < 20 && !heard; i++) { a.SendVoice(1, audio); Run(50); }
+            Assert.True(heard);
             for (int turn = 0; turn < 5; turn++)
             {
                 int want = turn + 2;

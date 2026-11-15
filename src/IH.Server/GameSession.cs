@@ -17,6 +17,7 @@ public sealed class SessionSave
 {
     public GameState State = new();
     public List<SlotSave> Slots = new();
+    public Rules.BranchDef[]? Mods;
 }
 
 /// <summary>One game: a lobby before the start, then the authoritative simulation plus per-client delta trackers.</summary>
@@ -30,6 +31,7 @@ public sealed class GameSession
     public readonly List<Slot> Slots = new();
     public Game? Game { get; private set; }
     private readonly GameServer _server;
+    private IReadOnlyList<Rules.BranchDef> _mods;
     private readonly List<DeltaTracker> _trackers = new();
     private int _host;
     private int _timerKey = -1, _savedTurn = -1;
@@ -38,11 +40,16 @@ public sealed class GameSession
     public GameSession(GameServer server, int id, GameSettings settings)
     {
         _server = server; Id = id; Settings = settings;
+        _mods = server.Options.Mods ?? Rules.Branches;
     }
 
     public GameSession(GameServer server, int id, SessionSave save)
     {
         _server = server; Id = id; Settings = save.State.Settings;
+        _mods = (save.Mods ?? server.Options.LegacyMods?.Invoke() ?? Rules.DefaultBranches()).Where(b => b.Enabled).ToArray();
+        ActivateMods();
+        if (save.State.Units.Values.Any(u => (uint)u.Type >= Rules.Units.Length))
+            throw new InvalidDataException("В сохранении есть юнит из отсутствующего мода. Верните прежний файл мода и откройте сохранение снова.");
         Game = new Game(save.State);
         long now = server.Now;
         foreach (var s in save.Slots)
@@ -55,6 +62,11 @@ public sealed class GameSession
     }
 
     public bool Started => Game != null;
+
+    private void ActivateMods()
+    {
+        if (!Rules.Branches.SequenceEqual(_mods)) Rules.SetBranches(_mods);
+    }
 
     public GameInfo Info() => new()
     {
@@ -148,6 +160,8 @@ public sealed class GameSession
         var players = Slots.Select(s => (s.Name, false)).ToList();
         for (int i = 0; i < Settings.AiCount && players.Count < 12; i++) players.Add(("ИИ " + AiNames[i % AiNames.Length], true));
         if (players.Count < 2) return "Нужно минимум два участника (добавьте ИИ или дождитесь игроков)";
+        if (_server.Options.LoadMods is { } load) _mods = load();
+        ActivateMods();
         try { Game = Game.Create(Settings, players, _server.Options.Balance); }
         catch (Exception ex) { return ex.Message; }
         _server.Log($"* Игра #{Id} «{Settings.Name}» началась: {Slots.Count} игрок(ов), {Settings.AiCount} ИИ, карта {Settings.MapW}x{Settings.MapH}, seed {Settings.Seed}");
@@ -162,12 +176,13 @@ public sealed class GameSession
 
     private GameStartMsg StartMsg(int slot) => new()
     {
-        GameId = Id, W = Game!.S.W, H = Game.S.H, YourId = slot, Settings = Settings, Branches = Rules.Branches.ToArray(),
+        GameId = Id, W = Game!.S.W, H = Game.S.H, YourId = slot, Settings = Settings, Branches = _mods.ToArray(),
     };
 
     // --------------------------------------------------------------- game
     public void HandleCommand(Conn c, CommandMsg m)
     {
+        ActivateMods();
         string? err;
         if (Game == null) err = "Игра ещё не началась";
         else
@@ -206,6 +221,7 @@ public sealed class GameSession
     /// <summary>Sends every connected player the changes they are allowed to see.</summary>
     public void Flush()
     {
+        ActivateMods();
         var g = Game!;
         UpdateTimer();
         var events = g.Events.ToList();
@@ -247,6 +263,7 @@ public sealed class GameSession
     {
         if (Game == null) return;
         if (!Slots.Any(s => s.Conn != null)) { _timerKey = -1; return; } // nobody online: the game is paused
+        ActivateMods();
         bool changed = false;
         if (_deadline > 0 && now >= _deadline)
         {
@@ -265,7 +282,8 @@ public sealed class GameSession
         {
             Directory.CreateDirectory(_server.Options.SaveDir);
             string path = Path.Combine(_server.Options.SaveDir, $"game{Id}.json");
-            var save = new SessionSave { State = Game.S, Slots = Slots.Select(s => new SlotSave { Name = s.Name, Token = s.Token }).ToList() };
+            var save = new SessionSave { State = Game.S, Mods = _mods.ToArray(),
+                Slots = Slots.Select(s => new SlotSave { Name = s.Name, Token = s.Token }).ToList() };
             File.WriteAllText(path + ".tmp", SaveGame.ToJson(save));
             File.Move(path + ".tmp", path, true);
             _savedTurn = Game.S.Turn;

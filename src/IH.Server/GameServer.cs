@@ -15,6 +15,9 @@ public sealed class ServerOptions
     public int AfkSeconds = 45;
     public BalanceConfig? Balance;
     public bool Quiet;
+    public IReadOnlyList<Rules.BranchDef>? Mods;
+    public Func<IReadOnlyList<Rules.BranchDef>>? LoadMods;
+    public Func<IReadOnlyList<Rules.BranchDef>>? LegacyMods;
     public string? SandboxToken;
 }
 
@@ -25,6 +28,8 @@ public sealed class Conn
     public bool Greeted;
     public GameSession? Session;
     public int Slot = -1;
+    public double VoiceBudget = 10;
+    public long VoiceBudgetAt;
 }
 
 /// <summary>
@@ -53,7 +58,15 @@ public sealed class GameServer
             DisconnectTimeout = 15000, // tolerant of VPN hiccups
             UpdateTime = 10,
             UnconnectedMessagesEnabled = false,
+            BroadcastReceiveEnabled = options.SandboxToken == null,
             IPv6Enabled = false,
+        };
+        _listener.NetworkReceiveUnconnectedEvent += (from, reader, kind) =>
+        {
+            byte[] buffer = reader.GetRemainingBytes();
+            reader.Recycle();
+            if (kind == UnconnectedMessageType.Broadcast && LanDiscovery.TryRead(buffer, response: false, out int nonce))
+                _net.SendUnconnectedMessage(LanDiscovery.Create(response: true, nonce), from);
         };
         _listener.ConnectionRequestEvent += req =>
         {
@@ -149,6 +162,9 @@ public sealed class GameServer
 
         switch (type)
         {
+            case MsgType.Voice:
+                RelayVoice(c, data);
+                break;
             case MsgType.ListGames:
                 Send(c, MsgType.LobbyList, LobbyList());
                 break;
@@ -211,6 +227,23 @@ public sealed class GameServer
     }
 
     private void Error(Conn c, string text) => Send(c, MsgType.Error, new TextMsg { Text = text });
+
+    private void RelayVoice(Conn sender, byte[] packet)
+    {
+        var session = sender.Session;
+        if (session?.Game == null || (uint)sender.Slot >= (uint)session.Slots.Count ||
+            session.Slots[sender.Slot].Conn != sender ||
+            !VoiceWire.TryRead(packet, out int game, out _, out uint sequence, out var pcm) || game != session.Id) return;
+        long now = Now;
+        sender.VoiceBudget = Math.Min(10, sender.VoiceBudget + (now - sender.VoiceBudgetAt) * 0.055);
+        sender.VoiceBudgetAt = now;
+        if (sender.VoiceBudget < 1) return;
+        sender.VoiceBudget--;
+        var relay = VoiceWire.Encode(session.Id, sender.Slot, sequence, pcm.Span);
+        foreach (var slot in session.Slots)
+            if (slot.Conn is { } recipient && recipient != sender)
+                recipient.Peer.Send(relay, DeliveryMethod.Unreliable);
+    }
 
     private static string Clean(string s, int max, string fallback)
     {

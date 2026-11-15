@@ -38,10 +38,10 @@ public partial class GameScreen
 
     private void RefreshNationHud()
     {
-        var shared = Contacts.Where(p => p.SharedStats != 0).ToArray();
+        var shared = W.Players.Values.Where(p => p.Id != W.MyId && p.Alive && !p.Neutral && (p.Met || !p.AI || p.Reputation >= 0)).OrderBy(p => p.Id).ToArray();
         int incoming = InboxCount;
         string state = incoming + "|" + string.Join("|", shared.Select(p =>
-            $"{p.Id}:{p.Name}:{p.SharedStats}:{string.Join(";", SharedMetricLines(p, false))}"));
+            $"{p.Id}:{p.Name}:{p.Met}:{p.Reputation}:{p.Gold}:{p.SharedScience}:{p.SharedCulture}:{p.SharedStats}"));
         if (state == _nationHudState) return;
         _nationHudState = state;
         Ui.Clear(_nationHud);
@@ -52,11 +52,22 @@ public partial class GameScreen
             "Предложения и призывы к защите", 13, "Primary"));
         foreach (var p in shared)
         {
-            var name = Ui.Lbl(p.Name, 13, Ui.Col(p.Color).Lightened(0.35f), true);
-            var stats = Ui.Lbl(string.Join("  ·  ", SharedMetricLines(p, true)), 11, Ui.Dim);
-            stats.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-            stats.TooltipText = string.Join("\n", SharedMetricLines(p, false));
-            _nationHud.AddChild(Ui.Clickable(Ui.V(1, name, stats), () => OpenDiplomacy(DiplomacyTab.Nations, p.Id), stats.TooltipText, margin: 4));
+            var name = Ui.Lbl(VoiceChat.PlayerName(p), 13, Ui.Col(p.Color).Lightened(0.35f), true);
+            var stats = Ui.H(10);
+            if (Shows(p, StatAccess.Economy)) stats.AddChild(new Chip(Ico.Gold, Ui.Gold, "Казна", 12).Set(p.Gold.ToString()));
+            if (Shows(p, StatAccess.Development))
+            {
+                stats.AddChild(new Chip(Ico.Science, Ui.Science, "Наука за ход", 12).Set(p.SharedScience.ToString()));
+                stats.AddChild(new Chip(Ico.Culture, Ui.Culture, "Культура за ход", 12).Set(p.SharedCulture.ToString()));
+            }
+            float score = Math.Max(0, p.Reputation) / 100f;
+            var color = score < 0.5f ? Ui.Bad.Lerp(Ui.Gold, score * 2) : Ui.Gold.Lerp(Ui.Good, (score - .5f) * 2);
+            var reputation = new Bar(color, 5, 100).WithBack(Ui.Line).Set(score);
+            string tip = p.Reputation < 0 ? "Порядочность: пока нет истории" : $"Порядочность: {p.Reputation}/100";
+            var info = Ui.V(2, Ui.H(8, name, Ui.Spacer(), stats), reputation);
+            _nationHud.AddChild(p.Met
+                ? Ui.Clickable(info, () => ShowTradeComposer(p.Id), tip, margin: 5)
+                : Ui.Card(info, 5));
         }
     }
 
@@ -221,12 +232,87 @@ public partial class GameScreen
                 card.AddChild(Ui.Wrap("Вы отдаёте · " + DescribeTradeSide(incoming ? pr.Requested : pr.Offered), _wrapW - 26, 13));
                 card.AddChild(Ui.Wrap("Вы получаете · " + DescribeTradeSide(incoming ? pr.Offered : pr.Requested), _wrapW - 26, 13));
             }
-            card.AddChild(incoming ? Ui.H(6,
-                Ui.Btn("Принять", () => Net.SendCommand(CmdType.Respond, pr.Id, 1), variation: "Primary"),
-                Ui.Btn("Отклонить", () => Net.SendCommand(CmdType.Respond, pr.Id, 0)))
-                : Ui.H(6, Ui.Btn("Отозвать", () => Net.SendCommand(CmdType.WithdrawProposal, pr.Id))));
+            card.AddChild(incoming ? OfferButtons(pr) : Ui.H(6, Ui.Btn("Отозвать",
+                () => Net.SendCommand(CmdType.WithdrawProposal, pr.Id))));
             Add(Ui.Card(card));
         }
+    }
+
+    private Control OfferButtons(ProposalDto proposal, Action? close = null)
+    {
+        void Respond(bool accepted)
+        {
+            Net.SendCommand(CmdType.Respond, proposal.Id, accepted ? 1 : 0);
+            close?.Invoke();
+        }
+        var row = Ui.Flow(6);
+        row.AddChild(Ui.Btn("Принять", () => Respond(true), variation: "Primary"));
+        row.AddChild(Ui.Btn("Отклонить", () => Respond(false)));
+        if (proposal.Kind == (byte)ProposalKind.Trade)
+            row.AddChild(Ui.Btn("Встречное предложение", () => { close?.Invoke(); ShowTradeComposer(proposal.From, proposal); }));
+        return row;
+    }
+
+    private Control ContractCard(ContractDto contract, Window parent)
+    {
+        var root = Ui.V(5, Ui.Lbl("Действующий договор", 14, Ui.Gold, true));
+        bool sender = contract.From == W.MyId;
+        var offered = sender ? contract.Offered : contract.Requested;
+        var received = sender ? contract.Requested : contract.Offered;
+        string Describe(IEnumerable<DealClause> clauses) => string.Join(", ", clauses.Select(TradeTerms.ClauseName));
+        if (offered.Length != 0) root.AddChild(Ui.Wrap("Вы предоставляете: " + Describe(offered), 510, 12));
+        if (received.Length != 0) root.AddChild(Ui.Wrap("Получаете: " + Describe(received), 510, 12));
+        void Manage(ContractAction action)
+        {
+            Net.SendCommand(CmdType.ManageContract, contract.Id, (int)action);
+            parent.QueueFree();
+        }
+        var actions = Ui.Flow(6);
+        if (contract.EndRequestedBy == W.MyId) actions.AddChild(Ui.Lbl("Ожидаем ответа", 12, Ui.Dim));
+        else if (contract.EndRequestedBy >= 0)
+        {
+            actions.AddChild(Ui.Btn("Согласиться прекратить", () => Manage(ContractAction.AcceptEnd)));
+            actions.AddChild(Ui.Btn("Сохранить договор", () => Manage(ContractAction.DeclineEnd)));
+        }
+        else actions.AddChild(Ui.Btn("Предложить прекращение", () => Manage(ContractAction.ProposeEnd)));
+        actions.AddChild(Ui.Btn("Нарушить договор", () =>
+        {
+            var warning = new ConfirmationDialog { Title = "Нарушить договор?", OkButtonText = "Нарушить",
+                DialogText = "Это повлияет на вашу репутацию. Об этом узнают все игроки.\nПрекратятся: " + Describe(offered.Concat(received)) };
+            parent.AddChild(warning);
+            warning.GetCancelButton().Text = "Отмена";
+            warning.Canceled += warning.QueueFree;
+            warning.Confirmed += () => Manage(ContractAction.Breach);
+            warning.PopupCentered();
+        }, variation: "Danger"));
+        root.AddChild(actions);
+        return Ui.Card(root);
+    }
+
+    private void HandleContractNotice(EventDto item)
+    {
+        if (item.Type == EventKind.ContractBreach) { Toast(item.S, true); return; }
+        if (item.Type is not (EventKind.ContractOffer or EventKind.ContractGift or EventKind.ContractHarm)) return;
+        var dialog = new AcceptDialog
+        {
+            Title = item.Type == EventKind.ContractOffer ? "Предложение об обмене" : "Договор",
+            OkButtonText = "Закрыть",
+        };
+        if (item.Type == EventKind.ContractOffer)
+        {
+            var pr = W.Me.Proposals.FirstOrDefault(p => p.Id == item.A && p.To == W.MyId);
+            if (pr == null) { dialog.QueueFree(); return; }
+            dialog.AddChild(Ui.V(7,
+                Ui.Lbl(W.PlayerName(pr.From), 16, Ui.Gold, true),
+                Ui.Wrap("Вы отдаёте: " + DescribeTradeSide(pr.Requested), 420, 13),
+                Ui.Wrap("Вы получаете: " + DescribeTradeSide(pr.Offered), 420, 13),
+                OfferButtons(pr, dialog.QueueFree)));
+        }
+        else dialog.AddChild(Ui.Wrap(item.S, 420, 15));
+        AddChild(dialog);
+        dialog.Confirmed += dialog.QueueFree;
+        dialog.Canceled += dialog.QueueFree;
+        dialog.PopupCentered();
     }
 
     private static string DescribeTradeSide(TradeSide side)
@@ -236,23 +322,47 @@ public partial class GameScreen
         if (side.Favor > 0) terms.Add($"{side.Favor} одобрения");
         if (side.Luxury != 0) terms.Add($"{Rules.Res((Resource)side.Luxury).Name} на 10 ходов");
         if (side.Tech.Length > 0) terms.Add(Rules.Tech(side.Tech)?.Name ?? side.Tech);
+        terms.AddRange(side.Clauses.Select(TradeTerms.ClauseName));
         return terms.Count == 0 ? "—" : string.Join(", ", terms);
     }
 
-    private void ShowTradeComposer(int pid)
+    private void ShowTradeComposer(int pid, ProposalDto? counter = null)
     {
         var dialog = new ConfirmationDialog
         {
             Title = $"Сделка с державой «{W.PlayerName(pid)}»",
-            OkButtonText = "Отправить предложение",
+            OkButtonText = "Обмен",
             DialogHideOnOk = false,
         };
-        var yours = TradeEditor("Вы отдаёте", false, out var readOffered);
-        var theirs = TradeEditor("Вы получаете", true, out var readRequested);
+        var yours = TradeEditor("Вы отдаёте", false, counter?.Requested, out var readOffered);
+        var theirs = TradeEditor("Вы получаете", true, counter?.Offered, out var readRequested);
         var columns = Ui.H(16, yours, new VSeparator(), theirs);
         var status = Ui.Wrap("", 540, 13, Ui.Dim);
-        dialog.AddChild(Ui.V(10, columns, status));
+        var content = Ui.V(10, columns, status);
+        foreach (var contract in W.Me.Contracts.Where(c => c.From == pid || c.To == pid))
+            content.AddChild(ContractCard(contract, dialog));
+        var scroll = new ScrollContainer { HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            CustomMinimumSize = new Vector2(600, Math.Clamp(GetViewportRect().Size.Y - 190, 240, 540)) };
+        content.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        scroll.AddChild(content);
+        dialog.AddChild(scroll);
         AddChild(dialog);
+        void RefreshAction()
+        {
+            var offered = readOffered();
+            var wanted = readRequested();
+            dialog.GetOkButton().Text = !offered.IsEmpty && wanted.IsEmpty && !offered.HasAlliance ? "Подарить" : "Обмен";
+        }
+        foreach (var editor in new[] { yours, theirs })
+        {
+            foreach (var node in editor.FindChildren("*", "BaseButton", true, false).OfType<BaseButton>())
+                node.Pressed += RefreshAction;
+            foreach (var node in editor.FindChildren("*", "SpinBox", true, false).OfType<SpinBox>())
+                node.ValueChanged += _ => RefreshAction();
+            foreach (var node in editor.FindChildren("*", "OptionButton", true, false).OfType<OptionButton>())
+                node.ItemSelected += _ => RefreshAction();
+        }
+        RefreshAction();
         dialog.GetCancelButton().Text = "Отмена";
         int seq = -1;
         void Result(int received, bool ok, string error, int rtt)
@@ -287,13 +397,13 @@ public partial class GameScreen
             }
             status.Text = "Отправляем предложение…";
             dialog.GetOkButton().Disabled = true;
-            seq = Net.SendCommand(CmdType.Propose, pid, (int)ProposalKind.Trade, s: TradeTerms.Encode(offered, requested));
+            seq = Net.SendCommand(CmdType.OfferContract, pid, counter?.Id ?? 0, s: TradeTerms.Encode(offered, requested));
         };
         dialog.Canceled += dialog.QueueFree;
         dialog.PopupCentered(new Vector2I(570, 315));
     }
 
-    private Control TradeEditor(string title, bool request, out Func<TradeSide> read)
+    private Control TradeEditor(string title, bool request, TradeSide? initial, out Func<TradeSide> read)
     {
         var panel = Ui.V(6, Ui.Lbl(title, 16, Ui.Gold, true));
         panel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
@@ -301,20 +411,82 @@ public partial class GameScreen
         var favor = new SpinBox { MinValue = 0, MaxValue = request ? TradeTerms.MaxAmount : Math.Clamp(W.Me.Favor, 0, TradeTerms.MaxAmount), Step = 1 };
         var lux = new OptionButton();
         var tech = new OptionButton();
-        lux.AddItem("Без поставки", 0);
-        foreach (var resource in Rules.Resources.Where(r => r.Class == ResClass.Luxury && (request || W.Me.Resources.Contains((int)r.Id))))
+        lux.AddItem("Выберите ресурс", 0);
+        foreach (var resource in Rules.Resources.Where(r => r.Id != Resource.None && (request || W.Me.Resources.Contains((int)r.Id))))
             lux.AddItem(resource.Name, (int)resource.Id);
         tech.AddItem("Без обмена", 0);
         var techIds = Rules.Techs.Where(t => request ? !W.Knows(t.Id) && t.Prereqs.All(W.Knows) : W.Me.Known.Contains(t.Id)).ToArray();
         for (int i = 0; i < techIds.Length; i++) tech.AddItem(techIds[i].Name, i + 1);
-        panel.AddChild(Ui.V(3, Ui.Lbl("Золото", 12, Ui.Dim), gold));
-        panel.AddChild(Ui.V(3, Ui.Lbl("Одобрение", 12, Ui.Dim), favor));
-        panel.AddChild(Ui.V(3, Ui.Lbl("Роскошь · 10 ходов", 12, Ui.Dim), lux));
-        panel.AddChild(Ui.V(3, Ui.Lbl("Технология", 12, Ui.Dim), tech));
+        var selected = Ui.V(4);
+        var available = Ui.V(3);
+        panel.AddChild(selected);
+        panel.AddChild(new HSeparator());
+        panel.AddChild(available);
+        var chosen = new HashSet<string>();
+        void Term(string id, string label, Control editor, bool enabled)
+        {
+            var add = new Button { Text = label, TooltipText = "Добавить условие" };
+            var remove = new Button { Text = "×", TooltipText = "Убрать условие" };
+            var item = Ui.Card(Ui.V(3, Ui.H(4, Ui.Lbl(label, 12), Ui.Spacer(), remove), editor), 4);
+            selected.AddChild(item);
+            available.AddChild(add);
+            add.Pressed += () => Pick(true);
+            remove.Pressed += () => Pick(false);
+            Pick(enabled);
+            void Pick(bool on)
+            {
+                if (on) chosen.Add(id); else chosen.Remove(id);
+                item.Visible = on;
+                add.Visible = !on;
+            }
+        }
+        DealClause? Preset(DealKind kind) => initial?.Clauses.FirstOrDefault(c => c.Kind == (byte)kind);
+        OptionButton Duration(DealKind kind)
+        {
+            var result = new OptionButton();
+            foreach (int length in new[] { 5, 10, 20, 0 })
+                result.AddItem(length == 0 ? "Бессрочно" : $"{length} х.", length);
+            result.Select(result.GetItemIndex(Preset(kind)?.Turns ?? 10));
+            return result;
+        }
+        gold.Value = initial?.Gold ?? 0;
+        favor.Value = initial?.Favor ?? 0;
+        tech.Select(Math.Max(0, Array.FindIndex(techIds, t => t.Id == initial?.Tech) + 1));
+        lux.Select(Math.Max(0, lux.GetItemIndex(Preset(DealKind.Resource)?.Value ?? initial?.Luxury ?? 0)));
+        var perTurn = new SpinBox { MinValue = 1, MaxValue = TradeTerms.MaxAmount, Step = 1, Value = Preset(DealKind.GoldPerTurn)?.Value ?? 1 };
+        var stats = new OptionButton();
+        stats.AddItem("Экономика", (int)StatAccess.Economy);
+        stats.AddItem("Развитие", (int)StatAccess.Development);
+        stats.AddItem("Территория", (int)StatAccess.Territory);
+        stats.AddItem("Все показатели", (int)StatAccess.All);
+        stats.Select(Math.Max(0, stats.GetItemIndex(Preset(DealKind.Statistics)?.Value ?? 1)));
+        var goldDuration = Duration(DealKind.GoldPerTurn);
+        var resourceDuration = Duration(DealKind.Resource);
+        var accessDuration = Duration(DealKind.Statistics);
+        var passageDuration = Duration(DealKind.Passage);
+        var allianceDuration = Duration(DealKind.Alliance);
+        Term("gold", "Золото", gold, gold.Value > 0);
+        Term("favor", "Одобрение", favor, favor.Value > 0);
+        Term("tech", "Технология", tech, tech.Selected > 0);
+        Term("payment", "Золото за ход", Ui.H(3, perTurn, goldDuration), Preset(DealKind.GoldPerTurn) != null);
+        Term("resource", "Поставки ресурсов", Ui.H(3, lux, resourceDuration), lux.Selected > 0);
+        Term("stats", "Доступ к показателям", Ui.H(3, stats, accessDuration), Preset(DealKind.Statistics) != null);
+        Term("passage", "Право прохода", passageDuration, Preset(DealKind.Passage) != null);
+        Term("alliance", "Оборонительный союз", allianceDuration, Preset(DealKind.Alliance) != null);
+        DealClause Clause(DealKind kind, int value, OptionButton duration) =>
+            new() { Kind = (byte)kind, Value = value, Turns = duration.GetSelectedId() };
         read = () => new TradeSide
         {
-            Gold = (int)gold.Value, Favor = (int)favor.Value, Luxury = Math.Max(0, lux.GetSelectedId()),
-            Tech = tech.Selected > 0 ? techIds[tech.Selected - 1].Id : "",
+            Gold = chosen.Contains("gold") ? (int)gold.Value : 0, Favor = chosen.Contains("favor") ? (int)favor.Value : 0,
+            Tech = chosen.Contains("tech") && tech.Selected > 0 ? techIds[tech.Selected - 1].Id : "",
+            Clauses = new[]
+            {
+                chosen.Contains("payment") ? Clause(DealKind.GoldPerTurn, (int)perTurn.Value, goldDuration) : null,
+                chosen.Contains("resource") && lux.Selected > 0 ? Clause(DealKind.Resource, lux.GetSelectedId(), resourceDuration) : null,
+                chosen.Contains("stats") ? Clause(DealKind.Statistics, stats.GetSelectedId(), accessDuration) : null,
+                chosen.Contains("passage") ? Clause(DealKind.Passage, 1, passageDuration) : null,
+                chosen.Contains("alliance") ? Clause(DealKind.Alliance, 1, allianceDuration) : null,
+            }.OfType<DealClause>().ToArray(),
         };
         return panel;
     }

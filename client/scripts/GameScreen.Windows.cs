@@ -54,6 +54,7 @@ public partial class GameScreen
         _window.Visible = advisor;
         _backdrop.Visible = advisor;
         _cityDock.Visible = city;
+        Map.FocusCity(city ? W.Cities.GetValueOrDefault(_cityId) : null);
         if (_aiming == null) Map.Highlight = Array.Empty<int>(); // keep the spell's range markers while a target is being picked
         Map.Invalidate();
         if (_win == Win.None) return;
@@ -187,14 +188,18 @@ public partial class GameScreen
                 Ui.H(6, new Icon(Ico.Prod, Ui.Prod, 15), Ui.Lbl(Rules.ItemName(item), 14, null, true), Ui.Spacer(),
                     Ui.Lbl($"{Math.Min(d.Prod, cost)}/{cost} · {Turns(cost - d.Prod, d.ProdRate)}", 12, Ui.Dim), remove),
                 new Bar(Ui.Prod, 7).Set(d.Prod / (float)Math.Max(1, cost), d.ProdRate / (float)Math.Max(1, cost)));
-            bool noSpace = item.StartsWith("u:") && W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
+            int unitType = item.StartsWith("u:") ? Rules.UnitIndex(item[2..]) : -1;
+            bool noSpace = unitType >= 0 && W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
+            bool needsCitizen = unitType >= 0 && Rules.Units[unitType].Role == UnitRole.Settler && c.Pop < 2;
             if (noSpace) now.AddChild(Ui.Lbl("Освободите место в гарнизоне для нового юнита.", 12, Ui.Gold));
+            if (needsCitizen) now.AddChild(Ui.Lbl("Для поселенца нужно население не меньше 2.", 12, Ui.Gold));
             int price = Rules.BuyPrice(cost, d.Prod);
             if (price > 0)
             {
                 var buyRow = Ui.H(6);
-                var buy = Ui.Btn($"Купить · {price} зол.", () => Net.SendCommand(CmdType.Buy, c.Id), "Достроить немедленно за золото", 13);
-                buy.Disabled = noSpace || me.Gold < price;
+                string buyTip = unitType >= 0 ? "Юнит появится сразу. Двигаться он сможет со следующего хода." : "Оплатить оставшееся строительство за золото";
+                var buy = Ui.Btn($"Купить · {price} зол.", () => Net.SendCommand(CmdType.Buy, c.Id), buyTip, 13);
+                buy.Disabled = noSpace || needsCitizen || me.Gold < price;
                 buyRow.AddChild(buy);
                 bool peaceful = item.StartsWith("b:") || Rules.Units[Rules.UnitIndex(item[2..])].Role != UnitRole.Military;
                 if (peaceful)
@@ -284,8 +289,9 @@ public partial class GameScreen
             if (t == null) continue;
             string id = a.Id;
             int left = a.Cost - (a.Id == me.Research ? me.ResearchProgress : Math.Min(me.ResearchProgress, a.Cost));
-            var b = Ui.Btn($"{(a.Id == me.Research ? "▶ " : "")}{t.Name} [{Rules.EraName(t.Era)}] — {a.Cost} ({Turns(left, me.SciRate)})",
-                () => Net.SendCommand(CmdType.SetResearch, s: id));
+            int order = Array.IndexOf(me.ResearchPlan, id) + 1;
+            var b = Ui.Btn($"{(order > 0 ? $"{order}. " : "")}{t.Name} [{Rules.EraName(t.Era)}] — {a.Cost} ({Turns(left, me.SciRate)})",
+                () => Net.SendCommand(CmdType.SetResearch, (int)ProgressionOrder.ToggleQueue, s: id));
             b.Alignment = HorizontalAlignment.Left;
             b.ThemeTypeVariation = a.Id == me.Research ? "TabOn" : "Flat";
             b.CustomMinimumSize = new Vector2(430, 0);
@@ -299,8 +305,8 @@ public partial class GameScreen
     private void BuildTechTree()
     {
         Heading("Дерево технологий");
-        Note("Нажмите на любую неизученную технологию. Игра сама начнёт с её предпосылок. Цифры показывают порядок изучения, ▼ — скидку догоняющего. Прокрутка — полосой внизу или Shift+колесо.");
-        var graph = TechGraph.ForScience(W.Me, id => Net.SendCommand(CmdType.SetResearch, (int)ProgressionOrder.SetGoal, s: id));
+        Note("Щёлкните по технологии, чтобы добавить её и её предпосылки в очередь. Повторный щелчок уберёт её вместе с зависимыми шагами. Цифры показывают порядок, ▼ — скидку догоняющего.");
+        var graph = TechGraph.ForScience(W.Me, id => Net.SendCommand(CmdType.SetResearch, (int)ProgressionOrder.ToggleQueue, s: id));
         Add(graph);
         if (_scrollToFrontier)
         {
@@ -320,9 +326,9 @@ public partial class GameScreen
         Add(Ui.Lbl($"Культура империи: +{me.CultureRate} за ход (её дают города: монументы, храмы, театры). Принято институтов: {me.Civics.Length + me.CivicLevel}.", 13));
         var total = Rules.CivicBonus(me.Civics, me.CivicLevel).Describe();
         Add(Ui.Lbl("Действующие бонусы: " + (total.Length > 0 ? total : "пока нет"), 13, Ui.Good));
-        Note($"Нажмите на любой непринятый институт. Игра пройдёт все его предпосылки по порядку. Наука и институты подпитывают друг друга: каждая изученная технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.");
+        Note("Щёлкните по институту, чтобы добавить его и его предпосылки в очередь. Повторный щелчок уберёт его вместе с зависимыми шагами.");
         BuildProgressionPlan(me.CivicPlan, CmdType.SetCivic, id => Rules.Civic(id)?.Name ?? id);
-        var graph = TechGraph.ForCivics(me, id => Net.SendCommand(CmdType.SetCivic, (int)ProgressionOrder.SetGoal, s: id));
+        var graph = TechGraph.ForCivics(me, id => Net.SendCommand(CmdType.SetCivic, (int)ProgressionOrder.ToggleQueue, s: id));
         graph.Accent = Ui.Culture;
         Add(graph);
         if (_scrollToFrontier)
@@ -335,8 +341,9 @@ public partial class GameScreen
         {
             string id = c.Id;
             int cost = me.CivicCosts.FirstOrDefault(x => x.Id == id)?.Cost ?? c.Cost;
-            var b = Ui.Btn($"{(id == me.Civic ? "▶ " : "")}{c.Name} — {cost} ({Turns(cost - Math.Min(me.CivicProgress, cost), me.CultureRate)})",
-                () => Net.SendCommand(CmdType.SetCivic, s: id));
+            int order = Array.IndexOf(me.CivicPlan, id) + 1;
+            var b = Ui.Btn($"{(order > 0 ? $"{order}. " : "")}{c.Name} — {cost} ({Turns(cost - Math.Min(me.CivicProgress, cost), me.CultureRate)})",
+                () => Net.SendCommand(CmdType.SetCivic, (int)ProgressionOrder.ToggleQueue, s: id));
             b.Alignment = HorizontalAlignment.Left;
             b.ThemeTypeVariation = id == me.Civic ? "TabOn" : "Flat";
             b.CustomMinimumSize = new Vector2(380, 0);
@@ -350,21 +357,19 @@ public partial class GameScreen
     private void BuildProgressionPlan(string[] plan, CmdType command, Func<string, string> name)
     {
         if (plan.Length == 0) return;
-        var summary = Ui.V(4, Ui.Lbl($"Цель · {name(plan[^1])}", 15, Ui.Gold, bold: true));
+        var summary = Ui.V(4, Ui.Lbl($"Очередь · {plan.Length}", 15, Ui.Gold, bold: true));
         summary.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        if (plan.Length > 1)
-        {
-            string next = string.Join(" → ", plan.Take(4).Select(name));
-            if (plan.Length > 4) next += $" → ещё {plan.Length - 4}";
-            var steps = Ui.Lbl(next, 13, Ui.Dim);
-            steps.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-            steps.MouseFilter = MouseFilterEnum.Pass;
-            steps.TooltipText = string.Join(" → ", plan.Select(name));
-            summary.AddChild(steps);
-        }
-        _progressionSummary.AddChild(Ui.Card(Ui.H(10, summary, Ui.Btn("Снять цель",
-            () => Net.SendCommand(command, (int)ProgressionOrder.CancelGoal),
-            "Завершить текущий шаг и остановить очередь"))));
+        var labels = plan.Select((id, index) => $"{index + 1}. {name(id)}").ToArray();
+        string preview = string.Join(" → ", labels.Take(4));
+        if (labels.Length > 4) preview += $" → ещё {labels.Length - 4}";
+        var steps = Ui.Lbl(preview, 13, Ui.Dim);
+        steps.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+        steps.MouseFilter = MouseFilterEnum.Pass;
+        steps.TooltipText = string.Join("\n", labels);
+        summary.AddChild(steps);
+        _progressionSummary.AddChild(Ui.Card(Ui.H(10, summary, Ui.Btn("Очистить",
+            () => Net.SendCommand(command, (int)ProgressionOrder.ClearQueue),
+            "Очистить очередь. Накопленные очки сохранятся."))));
         _progressionSummary.Visible = true;
     }
 
@@ -621,6 +626,19 @@ public partial class GameScreen
         var right = Ui.Card(Ui.V(6, Ui.Lbl("ЗАПАСЫ", 11, Ui.Dim, true), stock, resources), 10);
         left.SizeFlagsVertical = right.SizeFlagsVertical = SizeFlags.Fill;
         Add(Ui.H(10, left, right));
+
+        Heading("Источники дохода");
+        foreach (var group in me.IncomeLines.GroupBy(line => line.Resource))
+        {
+            string title = group.Key switch
+            {
+                "gold" => "Золото", "science" => "Наука", "culture" => "Культура", "faith" => "Вера", "favor" => "Одобрение",
+                _ => Rules.Branches.FirstOrDefault(b => b.Id == group.Key)?.PowerName ?? group.Key,
+            };
+            var items = Table();
+            foreach (var item in group) Line(items, item.Source, Ui.Signed(item.Delta), item.Delta < 0 ? Ui.Bad : Ui.Good);
+            Add(Ui.Card(Ui.V(4, Ui.Lbl(title, 14, Ui.Gold, true), items), 7));
+        }
 
         Heading("Анти-Сноуболл: ваше положение в мире");
         Add(Ui.Lbl($"Индекс технологического разрыва (ITR): {me.Itr:+0.00;−0.00}", 15, null, true));

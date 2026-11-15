@@ -142,30 +142,39 @@ public sealed partial class Game
             bool economy = access.HasFlag(StatAccess.Economy);
             bool development = access.HasFlag(StatAccess.Development);
             bool territory = access.HasFlag(StatAccess.Territory);
-            if (economy && o.Id != pid) RefreshEconomy(o);
+            if ((economy || development) && o.Id != pid && o.Alive && !o.Neutral) RefreshEconomy(o);
             return new PlayerDto
             {
                 // a civilisation nobody has met yet stays anonymous
                 Id = o.Id, Name = met || o.Neutral ? o.Name : "Неизвестная цивилизация", Color = o.Color, AI = o.IsAI, Alive = o.Alive, Neutral = o.Neutral,
                 Connected = o.Connected, EndedTurn = o.EndedTurn, Met = met,
+                Reputation = o.Reputation, HasBreachedContract = o.HasBreachedContract,
+                ParticipantName = !o.IsAI && !o.Neutral ? o.Name : "",
                 SharedStats = (byte)access, SharingStats = (byte)GrantedBy(p, o),
                 Score = territory ? Score(o) : -1, Cities = territory ? CitiesOf(o.Id).Count() : -1,
                 Era = development ? Rules.EraOf(o.Known, o.Future) : -1, Techs = development ? o.TechCount : -1,
-                Gold = economy ? o.Gold : -1, GoldRate = economy ? o.GoldRate : 0,
-                Allied = rel?.Allied == true, Embargo = p.Embargoes.Contains(o.Id), Embargoed = o.Embargoes.Contains(pid),
-                AtWar = o.Id != pid && AtWar(pid, o.Id), OpenBorders = rel != null && rel.OpenBorders,
+                Gold = economy ? o.Gold : -1, GoldRate = economy ? ProjectedGold(o) : 0,
+                SharedScience = development ? (int)Math.Round(o.SciRate + o.EchoBonus) : 0,
+                SharedCulture = development ? (int)Math.Round(o.CultureRate) : 0,
+                Allied = Allied(pid, o.Id), Embargo = p.Embargoes.Contains(o.Id), Embargoed = o.Embargoes.Contains(pid),
+                AtWar = o.Id != pid && AtWar(pid, o.Id), OpenBorders = rel != null && AllowsPassage(o.Id, pid),
             };
         }).ToArray();
 
         view.Me = new MeDto
         {
-            Gold = p.Gold, GoldRate = p.GoldRate, SciRate = (int)Math.Round(p.SciRate + p.EchoBonus), Slider = p.Slider,
+            Gold = p.Gold, GoldRate = ProjectedGold(p), SciRate = (int)Math.Round(p.SciRate + p.EchoBonus), Slider = p.Slider,
+            IncomeLines = BuildIncomeLines(p),
+            Contracts = S.Contracts.Where(c => c.Terms.From == pid || c.Terms.To == pid)
+                .Select(c => new ContractDto { Id = c.Terms.Id, From = c.Terms.From, To = c.Terms.To,
+                    Started = c.Terms.Started, EndRequestedBy = c.Terms.EndRequestedBy,
+                    Offered = LiveClauses(c, c.Terms.From), Requested = LiveClauses(c, c.Terms.To) }).ToArray(),
             ResearchProgress = p.ResearchProgress, EchoBonus = (int)Math.Round(p.EchoBonus),
             Income = (int)Math.Round(p.Income), UnitUpkeep = (int)Math.Round(p.UnitUpkeep),
             BuildingUpkeep = (int)Math.Round(p.BuildingUpkeep), CityMaint = (int)Math.Round(p.CityMaint),
             RoadUpkeep = (int)Math.Round(p.RoadUpkeep), StrainCost = (int)Math.Round(p.StrainCost),
             Research = p.Research ?? "", Known = p.Known.OrderBy(x => x).ToArray(), Future = (int[])p.Future.Clone(),
-            ResearchPlan = ResearchPlan(p), CivicPlan = CivicPlan(p),
+            ResearchPlan = p.ResearchQueue.ToArray(), CivicPlan = p.CivicQueue.ToArray(),
             Itr = (float)p.Itr, Pressure = (float)p.Pressure, Lag = (float)p.Lag, SciMult = (float)p.SciMult,
             CulMult = (float)p.CulMult, UpkeepMult = (float)p.UpkeepMult, Sprawl = (float)p.Sprawl,
             Available = Rules.AvailableTechs(p.Known, p.Future)
@@ -203,7 +212,7 @@ public sealed partial class Game
             Milestones = Rules.Milestones.Select(m => S.Milestones.TryGetValue(m.Id, out int who) ? who : -1).ToArray(),
             Resolution = S.Resolution ?? "", Proposed = S.Proposed, VotesFor = S.VotesFor, VotesAgainst = S.VotesAgainst,
             Chair = S.Chair, CongressIn = Rules.CongressPeriod - S.Turn % Rules.CongressPeriod,
-            Resources = p.Resources.ToArray(),
+            Resources = p.Resources.ToArray(), ImportedResources = p.ImportedResources.ToArray(),
             Votes = S.Players.Select(o => S.Votes.GetValueOrDefault(o.Id)).ToArray(),
         };
         return view;

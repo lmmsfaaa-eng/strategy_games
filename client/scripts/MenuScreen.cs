@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json;
 using Godot;
 using IH.Shared;
 
@@ -21,8 +25,11 @@ public partial class MenuScreen : Control
     private double _connectAt = -1;
     private bool _steamHostPending;
     private int _sandboxPort;
-    private readonly OptionButton _connMode = new(), _steamSave = new();
+    private readonly OptionButton _steamSave = new();
+    private readonly Button _steamMode = new() { Text = "Steam" }, _radminMode = new() { Text = "Radmin" };
     private readonly VBoxContainer _lanBox, _steamBox, _steamGames = Ui.V(4);
+    private readonly VBoxContainer _lanGames = Ui.V(3);
+    private readonly HashSet<(string Address, int Port)> _lanEndpoints = new();
     private readonly Label _steamStatus = Ui.Lbl("", 13, Ui.Dim);
     public bool AutoHost, AutoJoin;
     public void SetMapType(int t) => _mapType.Selected = Mathf.Clamp(t, 0, 2);
@@ -47,17 +54,24 @@ public partial class MenuScreen : Control
         panel.AddChild(root);
 
         root.AddChild(Ui.Lbl("INFINITE HORIZONS", 30, Ui.Gold, true));
-        root.AddChild(Ui.Lbl("4X-стратегия с бесконечным развитием и системой «Анти-Сноуболл»", 13, Ui.Dim));
+        string version = OS.GetExecutablePath().GetBaseDir().PathJoin("version.txt");
+        if (FileAccess.FileExists(version)) root.AddChild(Ui.Lbl(FileAccess.GetFileAsString(version).Trim(), 12, Ui.Dim));
         root.AddChild(new HSeparator());
 
-        _name.Text = main.Setting("name", "Игрок"); _name.MaxLength = 20;
+        _name.Text = main.Setting("name", ""); _name.PlaceholderText = "Ваше имя"; _name.MaxLength = 20;
         _host.Text = main.Setting("host", "127.0.0.1"); _host.PlaceholderText = "IP хоста в Radmin VPN, напр. 26.123.45.67";
         _port.Text = main.Setting("port", "27015");
         foreach (var e in new[] { _name, _host, _port, _gameName }) e.SizeFlagsHorizontal = SizeFlags.ExpandFill;
 
-        _connMode.AddItem("Локальная сеть / Radmin VPN", 0);
-        _connMode.AddItem("Steam (через Spacewar, AppID 480)", 1);
+        _steamMode.Pressed += () => SetMode(1);
+        _radminMode.Pressed += () => SetMode(0);
+        _steamMode.SizeFlagsHorizontal = _radminMode.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        var lanScroll = new ScrollContainer { CustomMinimumSize = new Vector2(0, 75), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        _lanGames.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        lanScroll.AddChild(_lanGames);
         _lanBox = Ui.V(8,
+            Ui.H(8, Ui.Lbl("Друзья в Radmin", 16, Ui.Gold, true), Ui.Spacer(), Ui.Btn("↻", DiscoverLan, "Обновить список")),
+            lanScroll,
             Row("Адрес сервера", _host), Row("Порт (UDP)", _port),
             Ui.Btn("Подключиться", ConnectPressed, size: 16, variation: "Primary"),
             new HSeparator(),
@@ -73,22 +87,21 @@ public partial class MenuScreen : Control
         _steamStatus.CustomMinimumSize = new Vector2(500, 0);
         _steamBox = Ui.V(8,
             _steamStatus,
-            Ui.H(8, Ui.Lbl("Игры в Steam", 16, Ui.Gold), Ui.Spacer(), Ui.Btn("Обновить список", SteamRefreshPressed)),
+            Ui.H(8, Ui.Lbl("Друзья в Steam", 16, Ui.Gold), Ui.Spacer(), Ui.Btn("↻", SteamRefreshPressed, "Обновить список")),
             steamScroll,
             new HSeparator(),
             Ui.Lbl("Или станьте хостом — игра появится в списке у друзей, VPN и проброс портов не нужны:", 13, Ui.Dim),
             Row("Партия", _steamSave),
-            Ui.Btn("Создать игру в Steam", HostSteamPressed, size: 16, variation: "Primary"),
-            Ui.Lbl("Steam покажет, что вы играете в Spacewar — это тестовое приложение Valve, под которым работает сеть игры.", 12, Ui.Dim));
-        _connectBox = Ui.V(8, Row("Ваше имя", _name), Row("Подключение", _connMode), new HSeparator(), _lanBox, _steamBox);
+            Ui.Btn("Создать игру в Steam", HostSteamPressed, size: 16, variation: "Primary"));
+        _connectBox = Ui.V(8, _name, Ui.H(4, _steamMode, _radminMode), new HSeparator(), _lanBox, _steamBox);
         root.AddChild(_connectBox);
         _steamSave.AddItem("Новая партия");
         foreach (string save in _saves) _steamSave.AddItem("Продолжить: " + save.GetFile());
-        _connMode.ItemSelected += idx => SetMode((int)idx);
         SteamNet.Changed += RefreshSteam;
         TreeExiting += () => SteamNet.Changed -= RefreshSteam;
-        _connMode.Selected = main.Setting("conn", "0") == "1" ? 1 : 0;
-        SetMode(_connMode.Selected, false);
+        _main.Net.LanServerFound += AddLanServer;
+        TreeExiting += () => _main.Net.LanServerFound -= AddLanServer;
+        SetMode(main.Setting("conn", "1") == "1" ? 1 : 0, false);
         _hostInfo.AutowrapMode = TextServer.AutowrapMode.WordSmart;
         _hostInfo.CustomMinimumSize = new Vector2(500, 0);
         _hostSave.AddItem("Новая партия");
@@ -118,13 +131,7 @@ public partial class MenuScreen : Control
         _roomBox = Ui.V(8, _roomTitle, _roomInfo, _slots,
             Ui.H(8, _startBtn, _readyBtn, Ui.Btn("Выйти", () => _main.Net.Send(MsgType.LeaveGame))));
         root.AddChild(_roomBox);
-        root.AddChild(Ui.Btn("Папка модов (свои ветки развития)", () =>
-        {
-            DirAccess.MakeDirRecursiveAbsolute(LocalServer.ModsDir);
-            OS.ShellOpen(LocalServer.ModsDir);
-            _status.AddThemeColorOverride("font_color", Ui.Dim);
-            _status.Text = "Папка: " + LocalServer.ModsDir + " — примеры появятся после первого «Создать сервер».";
-        }, "Ветки вроде «Магии» и «Шаманства» описаны JSON-файлами. Добавьте свой файл и создайте сервер заново.", 13));
+        root.AddChild(BuildMods());
         root.AddChild(_status);
         Refresh();
     }
@@ -137,6 +144,58 @@ public partial class MenuScreen : Control
         return Ui.H(8, l, field);
     }
 
+    private Control BuildMods()
+    {
+        var list = Ui.V(3);
+        var mods = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["shamanism.json"] = "Шаманство", ["magic.json"] = "Магия",
+        };
+        string selection = LocalServer.ModSelection;
+        var chosen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            if (System.IO.File.Exists(selection))
+                chosen.UnionWith(JsonSerializer.Deserialize<string[]>(System.IO.File.ReadAllText(selection)) ?? Array.Empty<string>());
+            if (System.IO.Directory.Exists(LocalServer.ModsDir))
+                foreach (string path in System.IO.Directory.EnumerateFiles(LocalServer.ModsDir, "*.json"))
+                {
+                    string name = System.IO.Path.GetFileName(path);
+                    if (!name.Equals("launcher-selection.json", StringComparison.OrdinalIgnoreCase))
+                        mods.TryAdd(name, System.IO.Path.GetFileNameWithoutExtension(path));
+                }
+        }
+        catch (Exception e) when (e is JsonException or System.IO.IOException or UnauthorizedAccessException)
+        {
+            ShowError("Не удалось загрузить список модов");
+        }
+        foreach (var (name, title) in mods)
+        {
+            var option = new CheckBox { Text = title, ButtonPressed = chosen.Contains(name) };
+            option.Toggled += on =>
+            {
+                if (on) chosen.Add(name); else chosen.Remove(name);
+                try
+                {
+                    var parent = System.IO.Path.GetDirectoryName(selection)!;
+                    System.IO.Directory.CreateDirectory(parent);
+                    System.IO.File.WriteAllText(selection + ".new", JsonSerializer.Serialize(chosen.ToArray()));
+                    System.IO.File.Move(selection + ".new", selection, overwrite: true);
+                }
+                catch (Exception e) when (e is System.IO.IOException or UnauthorizedAccessException)
+                {
+                    if (on) chosen.Remove(name); else chosen.Add(name);
+                    option.SetPressedNoSignal(!on);
+                    ShowError("Не удалось сохранить выбор модов");
+                }
+            };
+            list.AddChild(option);
+        }
+        var scroll = new ScrollContainer { CustomMinimumSize = new Vector2(0, 78), HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled };
+        scroll.AddChild(list);
+        return Ui.V(3, Ui.Section("Моды"), scroll);
+    }
+
     public void SetPlayerName(string name) => _name.Text = name;
     public void SetAddress(string host, string port) { _host.Text = host; _port.Text = port; }
 
@@ -147,19 +206,34 @@ public partial class MenuScreen : Control
     }
 
     // ------------------------------------------------------------- Steam
-    public void UseSteam() { _connMode.Selected = 1; SetMode(1); }
+    public void UseSteam() => SetMode(1);
+
+    private void DiscoverLan()
+    {
+        if (!int.TryParse(_port.Text, out int port) || port is < 1 or > 65535) { ShowError("Проверьте UDP-порт"); return; }
+        _lanEndpoints.Clear();
+        Ui.Clear(_lanGames);
+        _lanGames.AddChild(Ui.Lbl("Можно подключиться напрямую по адресу", 12, Ui.Dim));
+        _main.Net.DiscoverLan(port);
+    }
+
+    private void AddLanServer(string address, int port)
+    {
+        if (!_lanEndpoints.Add((address, port))) return;
+        if (_lanEndpoints.Count == 1) Ui.Clear(_lanGames);
+        _lanGames.AddChild(Ui.H(6, Ui.Lbl($"{address}:{port}", 13), Ui.Spacer(),
+            Ui.Btn("Подключиться", () => { _host.Text = address; _port.Text = port.ToString(); ConnectPressed(); })));
+    }
 
     private void SetMode(int mode, bool save = true)
     {
         _lanBox.Visible = mode == 0;
         _steamBox.Visible = mode == 1;
+        _steamMode.ThemeTypeVariation = mode == 1 ? "TabOn" : "Tab";
+        _radminMode.ThemeTypeVariation = mode == 0 ? "TabOn" : "Tab";
         if (save) _main.SaveSetting("conn", mode.ToString());
-        if (mode != 1) return;
-        if (SteamNet.Init())
-        {
-            if (_name.Text.Trim() is "" or "Игрок") _name.Text = SteamNet.PersonaName.Length > 20 ? SteamNet.PersonaName[..20] : SteamNet.PersonaName;
-            SteamNet.RefreshGames();
-        }
+        if (mode != 1) { DiscoverLan(); return; }
+        if (SteamNet.Init()) SteamNet.RefreshGames();
         RefreshSteam();
     }
 
@@ -171,7 +245,7 @@ public partial class MenuScreen : Control
 
     private void RefreshSteam()
     {
-        _steamStatus.Text = SteamNet.Status;
+        _steamStatus.Text = SteamNet.Ready ? "" : SteamNet.Status;
         _steamStatus.AddThemeColorOverride("font_color", SteamNet.Ready ? Ui.Good : Ui.Bad);
         Ui.Clear(_steamGames);
         if (!SteamNet.Ready) { _steamGames.AddChild(Ui.Lbl("Steam недоступен.", 13, Ui.Dim)); return; }
@@ -229,7 +303,7 @@ public partial class MenuScreen : Control
     public void HostSandboxPressed()
     {
         if (_connectAt >= 0) return;
-        if (_name.Text.Trim().Length == 0) { ShowError("Введите имя"); return; }
+        if (_name.Text.Trim().Length == 0) _name.Text = "Игрок";
         const int port = 27016;
         string? error = LocalServer.Start(port, null, sandbox: true);
         if (error != null) { ShowError(error); return; }

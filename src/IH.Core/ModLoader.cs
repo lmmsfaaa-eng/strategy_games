@@ -140,14 +140,20 @@ public static class ModLoader
         return errors;
     }
 
-    /// <summary>Built-in branches plus every valid *.json in the folder. Missing folder = built-ins only.</summary>
-    public static List<Rules.BranchDef> Load(string? dir, Action<string>? log = null)
+    /// <summary>Loads explicit mod files and examples selected by the launcher.</summary>
+    public static List<Rules.BranchDef> Load(string? dir, Action<string>? log = null, string? selection = null, bool legacy = false)
     {
-        var result = Rules.DefaultBranches();
+        var result = legacy ? Rules.DefaultBranches() : new List<Rules.BranchDef>();
+        HashSet<string>? selected = selection == null || legacy ? null : ReadSelection(selection, log);
+        if (selected != null)
+            foreach (var example in Rules.ExampleBranches())
+                if (selected.Contains(example.Id + ".json")) result.Add(example);
         if (dir == null || !Directory.Exists(dir)) return result;
         foreach (string path in Directory.GetFiles(dir, "*.json").OrderBy(p => p, StringComparer.Ordinal))
         {
             string file = Path.GetFileName(path);
+            if (file.Equals("launcher-selection.json", StringComparison.OrdinalIgnoreCase) ||
+                (selected != null && !selected.Contains(file))) continue;
             try
             {
                 var b = Parse(File.ReadAllText(path));
@@ -188,7 +194,20 @@ public static class ModLoader
         return result;
     }
 
-    /// <summary>Writes the built-in branches and a short guide, as a starting point for the player's own files.</summary>
+    private static HashSet<string> ReadSelection(string path, Action<string>? log)
+    {
+        try
+        {
+            var files = File.Exists(path) ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(path)) : null;
+            return new HashSet<string>(files ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is JsonException or IOException or UnauthorizedAccessException)
+        {
+            log?.Invoke("Не удалось прочитать выбор модов: " + e.Message);
+            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
     /// <summary>
     /// Writes the built-in branches and a guide into "examples" inside the mods folder. That subfolder is
     /// never loaded, so it can be refreshed on every start without touching the player's own files.
@@ -197,7 +216,7 @@ public static class ModLoader
     {
         string examples = Path.Combine(dir, "examples");
         Directory.CreateDirectory(examples);
-        foreach (var b in Rules.DefaultBranches()) File.WriteAllText(Path.Combine(examples, b.Id + ".json"), ToJson(b));
+        foreach (var b in Rules.ExampleBranches()) File.WriteAllText(Path.Combine(examples, b.Id + ".json"), ToJson(b));
         File.WriteAllText(Path.Combine(dir, "КАК_СДЕЛАТЬ_ВЕТКУ.txt"), Guide);
     }
 

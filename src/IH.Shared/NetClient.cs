@@ -21,6 +21,8 @@ public sealed class NetClient
     private int _port, _seq;
     private long _nextRetry, _nextPing;
     private bool _wantConnection;
+    private int _discoveryNonce;
+    private long _discoveryUntil;
 
     public string Name = "Игрок", Token = "";
     public NetState State { get; private set; } = NetState.Offline;
@@ -41,13 +43,24 @@ public sealed class NetClient
     /// <summary>seq, ok, error text, round-trip time in ms.</summary>
     public event Action<int, bool, string, int>? CommandResult;
     public event Action<string>? ChatReceived;
+    public event Action<int, uint, ReadOnlyMemory<byte>>? VoiceReceived;
+    public event Action<string, int>? LanServerFound;
     public event Action<string>? ErrorReceived;
     public event Action<string>? TokenIssued;
 
     public NetClient()
     {
         // 20 attempts x 500 ms: a relayed route (VPN, Steam) may need several seconds to come up
-        _net = new NetManager(_listener) { DisconnectTimeout = 15000, UpdateTime = 10, IPv6Enabled = false, MaxConnectAttempts = 20 };
+        _net = new NetManager(_listener) { DisconnectTimeout = 15000, UpdateTime = 10, IPv6Enabled = false,
+            MaxConnectAttempts = 20, UnconnectedMessagesEnabled = true };
+        _listener.NetworkReceiveUnconnectedEvent += (from, reader, kind) =>
+        {
+            byte[] data = reader.GetRemainingBytes();
+            reader.Recycle();
+            if (kind == UnconnectedMessageType.BasicMessage && _clock.ElapsedMilliseconds <= _discoveryUntil
+                && LanDiscovery.TryRead(data, response: true, out int nonce) && nonce == _discoveryNonce)
+                LanServerFound?.Invoke(from.Address.ToString(), from.Port);
+        };
         _listener.PeerConnectedEvent += peer =>
         {
             _peer = peer;
@@ -80,6 +93,14 @@ public sealed class NetClient
             if (data.Length >= 2) Handle(data);
         };
         _net.Start();
+    }
+
+    public void DiscoverLan(int port)
+    {
+        if (port is < 1 or > 65535) return;
+        _discoveryNonce = Random.Shared.Next();
+        _discoveryUntil = _clock.ElapsedMilliseconds + 3000;
+        _net.SendBroadcast(LanDiscovery.Create(response: false, _discoveryNonce), port);
     }
 
     private void SetState(NetState s)
@@ -132,6 +153,12 @@ public sealed class NetClient
 
     public void Send(MsgType type, IWire? body = null) => _peer?.Send(Codec.Encode(type, body), DeliveryMethod.ReliableOrdered);
 
+    public void SendVoice(uint sequence, ReadOnlySpan<byte> pcm)
+    {
+        if (State == NetState.InGame && World is { } world)
+            _peer?.Send(VoiceWire.Encode(world.GameId, 0, sequence, pcm), DeliveryMethod.Unreliable);
+    }
+
     /// <summary>Sends a game command; the result arrives through <see cref="CommandResult"/> with the same sequence number.</summary>
     public int SendCommand(GameCommand cmd)
     {
@@ -148,6 +175,12 @@ public sealed class NetClient
     {
         switch (Codec.PeekType(d, 0))
         {
+            case MsgType.Voice:
+                if (State == NetState.InGame && World is { } world &&
+                    VoiceWire.TryRead(d, out int game, out int speaker, out uint sequence, out var pcm) &&
+                    game == world.GameId && speaker != world.MyId)
+                    VoiceReceived?.Invoke(speaker, sequence, pcm);
+                break;
             case MsgType.Welcome:
             {
                 var m = Codec.Decode<WelcomeMsg>(d, 0, d.Length);

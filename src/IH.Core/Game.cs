@@ -23,6 +23,8 @@ public sealed partial class Game
         _at = new List<Unit>[Grid.Count];
         foreach (var u in S.Units.Values) (_at[u.Tile] ??= new List<Unit>()).Add(u);
         MigrateUnitStacks();
+        if (S.ContractFormat == 0) { RestoreContracts(); S.ContractFormat = 1; }
+        foreach (var player in S.Players) RestoreProgressionQueues(player);
         foreach (var proposal in S.Proposals.Where(x => x.Expires == 0))
             proposal.Expires = S.Turn + ProposalTurns;
     }
@@ -110,7 +112,7 @@ public sealed partial class Game
     public bool CanEnterTerritory(int pid, int tile)
     {
         int owner = S.Tiles[tile].Owner;
-        return owner < 0 || owner == pid || AtWar(pid, owner) || Rel(pid, owner).OpenBorders;
+        return owner < 0 || owner == pid || AtWar(pid, owner) || AllowsPassage(owner, pid);
     }
 
     public Mover MoverOf(Unit u) => Rules.MoverFor(u.Def, P(u.Owner).Has);
@@ -217,6 +219,8 @@ public sealed partial class Game
         switch (kind)
         {
             case CmdType.MoveUnit: return CmdMove(p, c.A, c.B);
+            case CmdType.OfferContract: return CmdOfferContract(p, c.A, c.B, c.S);
+            case CmdType.ManageContract: return CmdManageContract(p, c.A, (ContractAction)c.B);
             case CmdType.AutoExplore: return CmdAutoExplore(p, c.A);
             case CmdType.FoundCity: return CmdFound(p, c.A, c.S);
             case CmdType.Work: return CmdWork(p, c.A, (WorkKind)c.B);
@@ -601,13 +605,21 @@ public sealed partial class Game
         var city = OwnCity(p, cityId, out var err); if (city == null) return err;
         if (city.DisorderTurns > 0) return "В городе беспорядки";
         if (city.Queue.Count == 0 || city.Queue[0] == Rules.Wealth) return "Нечего покупать";
-        if (city.Queue[0].StartsWith("u:") && !HasUnitSpace(p.Id, city.Tile)) return "В городе нет места для нового юнита";
-        int cost = Rules.ItemCost(city.Queue[0]);
+        string item = city.Queue[0];
+        int type = -1;
+        if (item.StartsWith("u:"))
+        {
+            if (!CanBuild(p, city, item)) return "Этого юнита нельзя купить в данном городе";
+            type = Rules.UnitIndex(item[2..]);
+            if (UnitProductionError(p, city, type) is { } blocked) return blocked;
+        }
+        int cost = Rules.ItemCost(item);
         int price = Rules.BuyPrice(cost, city.Prod);
         if (price <= 0) return "Уже оплачено";
         if (p.Gold < price) return $"Недостаточно золота (нужно {price})";
         p.Gold -= price;
         city.Prod = cost;
+        if (type >= 0) CompleteProduction(p, city, item, cost, type);
         return null;
     }
 

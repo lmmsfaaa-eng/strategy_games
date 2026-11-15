@@ -46,6 +46,10 @@ public partial class MapView : Node3D
     private readonly Dictionary<int, int> _moveSeq = new();
     private readonly List<(int tile, double until, Color color)> _flashes = new();
     private readonly ImmediateMesh _lines = new();
+    private readonly ImmediateMesh _fogTransitionMesh = new();
+    private readonly List<(int Tile, double End)> _fogTransitions = new();
+    private readonly byte[] _lastVisibility;
+    private bool _fogWasDrawn;
     private readonly StandardMaterial3D _terrainMat = new() { VertexColorUseAsAlbedo = true, VertexColorIsSrgb = true, Roughness = 1f };
     private readonly Mesh _ringMesh = new TorusMesh { InnerRadius = 0.5f, OuterRadius = 0.62f, Rings = 24, RingSegments = 6 };
     private readonly StandardMaterial3D _ringMat = new() { AlbedoColor = new Color(1f, 0.85f, 0.25f), ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded };
@@ -60,6 +64,18 @@ public partial class MapView : Node3D
     public List<int>? HoverPath;
     public int HoverTurns { get; private set; }
     public int[] Highlight = Array.Empty<int>();
+    private HashSet<int>? _cityFocus;
+
+    public void FocusCity(CityDto? city)
+    {
+        var tiles = city == null ? null : W.Grid.Range(city.Tile, city.Radius)
+            .Where(t => W.Vis[t] > 0 && W.Tiles[t].Owner == city.Owner)
+            .Concat(city.Detail?.Worked ?? Array.Empty<int>()).ToHashSet();
+        if (tiles == null ? _cityFocus == null : _cityFocus != null && tiles.SetEquals(_cityFocus)) return;
+        _cityFocus = tiles;
+        for (int i = 0; i < _chunks.Length; i++) _dirtyChunks.Add(i);
+        _dirty = true;
+    }
     public int UnitProjectionRevision { get; private set; }
     private bool _dirty = true, _layoutDirty, _dragging, _pressed;
     private Vector2 _pressPos;
@@ -97,6 +113,19 @@ public partial class MapView : Node3D
     public MapView(GameScreen screen, ClientWorld world)
     {
         _screen = screen; W = world;
+        _lastVisibility = new byte[W.Grid.Count];
+        AddChild(new MeshInstance3D
+        {
+            Mesh = _fogTransitionMesh,
+            CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+            MaterialOverride = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                CullMode = BaseMaterial3D.CullModeEnum.Disabled,
+                VertexColorUseAsAlbedo = true,
+            },
+        });
         _chunkCols = (W.Grid.W + ChunkSize - 1) / ChunkSize;
         int rows = (W.Grid.H + ChunkSize - 1) / ChunkSize;
         _chunks = new Chunk[_chunkCols * rows];
@@ -457,6 +486,9 @@ public partial class MapView : Node3D
         foreach (var t in d.Tiles)
         {
             if (!W.Grid.Valid(t.Idx)) continue;
+            if (!d.Full && _lastVisibility[t.Idx] == 0 && W.Vis[t.Idx] > 0 && _fogTransitions.Count < 180)
+                _fogTransitions.Add((t.Idx, Now + 0.42));
+            _lastVisibility[t.Idx] = W.Vis[t.Idx];
             MarkDirty(t.Idx);
             foreach (int n in W.Grid.Nb[t.Idx]) MarkDirty(n);
         }
@@ -566,6 +598,8 @@ public partial class MapView : Node3D
         }
 
         double now = Now;
+        _fogTransitions.RemoveAll(item => item.End <= now);
+        if (_fogWasDrawn || _fogTransitions.Count != 0) DrawFogTransitions(now);
         bool moving = false;
         foreach (var v in _units.Values)
         {
@@ -583,7 +617,7 @@ public partial class MapView : Node3D
             }
         }
         _flashes.RemoveAll(f => f.until < now);
-        if (moving || _layoutDirty || _flashes.Count > 0 || _dirty)
+        if (moving || _layoutDirty || _flashes.Count > 0 || _fogTransitions.Count > 0 || _dirty)
         {
             bool full = _dirty;
             _dirty = false;
@@ -591,9 +625,41 @@ public partial class MapView : Node3D
             if (full || _layoutDirty) SyncCities();
             _layoutDirty = false;
             DrawLines();
-            if (moving || _flashes.Count > 0) OS.LowProcessorUsageMode = false;
+            if (moving || _flashes.Count > 0 || _fogTransitions.Count > 0) OS.LowProcessorUsageMode = false;
         }
         else if (!OS.LowProcessorUsageMode) OS.LowProcessorUsageMode = true;
+    }
+
+    private void DrawFogTransitions(double now)
+    {
+        _fogTransitionMesh.ClearSurfaces();
+        _fogWasDrawn = false;
+        foreach (var (tile, end) in _fogTransitions)
+        {
+            var ground = Ground(tile);
+            float fade = Mathf.SmoothStep(0f, 1f, (float)((end - now) / 0.42));
+            foreach (var repeat in VisiblePeriods(ground - Vector2.One, ground + Vector2.One))
+            {
+                if (!_fogWasDrawn)
+                {
+                    _fogTransitionMesh.SurfaceBegin(Mesh.PrimitiveType.Triangles);
+                    _fogWasDrawn = true;
+                }
+                var shift = PeriodOffset(repeat.X, repeat.Y);
+                var center = new Vector3(ground.X + shift.X, Height(W.Tiles[tile]) + 1.27f, ground.Y + shift.Y);
+                Color mist = Ui.Col(0xA9BCC1, fade * 0.96f);
+                for (int i = 0; i < Corner.Length; i++)
+                {
+                    _fogTransitionMesh.SurfaceSetColor(mist);
+                    _fogTransitionMesh.SurfaceAddVertex(center);
+                    _fogTransitionMesh.SurfaceSetColor(new Color(mist, mist.A * 0.66f));
+                    _fogTransitionMesh.SurfaceAddVertex(center + Corner[i]);
+                    _fogTransitionMesh.SurfaceSetColor(new Color(mist, mist.A * 0.66f));
+                    _fogTransitionMesh.SurfaceAddVertex(center + Corner[(i + 1) % Corner.Length]);
+                }
+            }
+        }
+        if (_fogWasDrawn) _fogTransitionMesh.SurfaceEnd();
     }
 
     private Vector2 ForwardDir => new(-Mathf.Sin(Yaw), -Mathf.Cos(Yaw));
@@ -698,10 +764,22 @@ public partial class MapView : Node3D
             {
                 int idx = y * W.Grid.W + x;
                 byte vis = W.Vis[idx];
-                if (vis == 0) continue;
                 var t = W.Tiles[idx];
+                if (vis == 0)
+                {
+                    var ground = Ground(idx);
+                    var cloud = new Vector3(ground.X, BaseY + 0.012f, ground.Y);
+                    var mist = Ui.Col(0xA6B6BC).Lerp(Ui.Col(0xC7D0D0), (Mathf.Sin(x * .41f + y * .57f) + 1) * .24f);
+                    for (int k = 0; k < Corner.Length; k++)
+                        terrain.Tri(cloud, cloud + Corner[k], cloud + Corner[(k + 1) % Corner.Length], Vector3.Up, mist);
+                    continue;
+                }
                 var c = CanonicalCenter(idx);
-                Color Shade(Color col) => vis == 1 ? col.Lerp(Ui.Col(0x475659), 0.42f).Darkened(0.22f) : col;
+                Color Shade(Color col)
+                {
+                    if (vis == 1) col = col.Lerp(Ui.Col(0x475659), 0.42f).Darkened(0.22f);
+                    return _cityFocus != null && !_cityFocus.Contains(idx) ? col.Darkened(0.48f) : col;
+                }
                 var color = TerrainColor(t);
                 float variation = Mathf.Sin(x * 0.82f + y * 0.6f) * Mathf.Cos(y * 0.7f - x * 0.21f) * 0.065f;
                 color = variation > 0 ? color.Lightened(variation) : color.Darkened(-variation);
@@ -928,7 +1006,7 @@ public partial class MapView : Node3D
             if (W.Grid.Valid(t)) { Begin(); HexOutline(t, 0.72f, new Color(1, 1, 1, 0.9f), 0.08f); HexOutline(t, 0.68f, new Color(1, 1, 1, 0.9f), 0.08f); }
         if (HoverTile >= 0 && W.Vis[HoverTile] > 0) { Begin(); HexOutline(HoveredCenter(), 0.98f, new Color(1, 1, 1, 0.55f), 0.06f); }
 
-        if (SelectedUnit >= 0 && W.Units.TryGetValue(SelectedUnit, out var sel))
+        if (!_screen.CityFocused && SelectedUnit >= 0 && W.Units.TryGetValue(SelectedUnit, out var sel))
         {
             if (!_screen.IsAiming && HoverPath is { Count: > 0 })
             {

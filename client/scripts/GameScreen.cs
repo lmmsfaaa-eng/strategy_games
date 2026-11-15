@@ -73,7 +73,6 @@ public partial class GameScreen : Control
         (Win.Economy, "Экономика", Ico.Gold, Ui.Gold, "F2", "Казна, содержание и ваше положение в системе «Анти-Сноуболл»"),
         (Win.Diplomacy, "Державы", Ico.Favor, Ui.Favor, "F4", "Сделки, договоры, разведка и Всемирный конгресс"),
         (Win.Demographics, "Рейтинг", Ico.Chart, Ui.Good, "F9", "Демография, рейтинг держав и мировые достижения"),
-        (Win.Help, "Справка", Ico.Help, Ui.Dim, "F1", "Управление и краткие правила"),
     };
 
     public GameScreen(Main main, ClientWorld world)
@@ -87,6 +86,8 @@ public partial class GameScreen : Control
         AddChild(Banners);
         AddChild(Sound);
         Sound.Muted = main.Setting("mute", "0") == "1";
+        _voice = new VoiceChat(main, world);
+        AddChild(_voice);
 
         BuildTopBar();
         BuildLeftColumn();
@@ -98,7 +99,7 @@ public partial class GameScreen : Control
 
         Resized += FitWindow;
         HoverChanged(-1);
-        Log("Игра началась. F1 — справка по управлению.", Ui.Dim);
+        Log("Игра началась.", Ui.Dim);
     }
 
     // ------------------------------------------------------------ layout
@@ -117,7 +118,7 @@ public partial class GameScreen : Control
         _faith.TooltipText = "Вера: запас и доход. Основание религии, миссионеры, покупка зданий и мирных юнитов (F8)";
         _favor.TooltipText = "Дипломатическое одобрение: голоса во Всемирном конгрессе (F4). Его дают мир, единоверцы и мировые достижения";
         foreach (var c in new[] { _gold, _science, _culture, _faith, _favor }) c.MouseFilter = MouseFilterEnum.Stop;
-        var chips = Ui.H(16, _gold, _science, _culture, _faith, _favor);
+        var chips = Ui.H(8, _gold, _science, _culture, _faith, _favor);
         for (int i = 0; i < Rules.Branches.Count; i++)
         {
             var b = Rules.Branches[i];
@@ -133,7 +134,10 @@ public partial class GameScreen : Control
 
         _leave = Ui.Btn("Выйти", LeavePressed, "Место сохранится. Для возврата снова подключитесь к тому же серверу с этого клиента", 13);
         var turnBox = Ui.H(7, new Icon(Ico.Turn, Ui.Gold, 15), _turn, _era);
-        var row = Ui.H(14, turnBox, new VSeparator(), chips, Ui.Spacer(), _timer, _itr, _leave);
+        _micIndicator = Ui.Lbl("Микрофон", 12, Ui.Good);
+        _micIndicator.Hide();
+        var row = Ui.H(8, turnBox, new VSeparator(), chips, Ui.Spacer(), _timer, _itr, _micIndicator,
+            Ui.Btn("⚙", ShowSettings, "Настройки", 17), _leave);
         top.AddChild(row);
         AddChild(Ui.Dock(top, SizeFlags.Fill, SizeFlags.ShrinkBegin, 0, 0, 0, 0));
     }
@@ -189,6 +193,7 @@ public partial class GameScreen : Control
         var hint = Ui.Lbl("T — написать в чат", 11, new Color(Ui.Dim, 0.7f));
         hint.MouseFilter = MouseFilterEnum.Ignore;
         var box = Ui.V(5);
+        BuildAvatarStrip(box);
         BuildNationHud(box);
         foreach (var child in new Control[] { _log, _chat, hint }) box.AddChild(child);
         box.MouseFilter = MouseFilterEnum.Ignore;
@@ -302,6 +307,7 @@ public partial class GameScreen : Control
         if (d.Events.Any(e => e.Type is EventKind.Combat or EventKind.Ranged)) Sound.Play(Sfx.Id.Combat);
         foreach (var e in d.Events)
         {
+            HandleContractNotice(e);
             string? text = W.Describe(e);
             if (text == null) continue;
             bool bad = e.Type is EventKind.Protest or EventKind.Secession or EventKind.Bankrupt or EventKind.WarDeclared;
@@ -391,6 +397,7 @@ public partial class GameScreen : Control
     public override void _Process(double delta)
     {
         double now = Time.GetTicksMsec() / 1000.0;
+        _micIndicator.Visible = _voice.Capturing;
         UpdateDiagnostics(now);
         if (_toastPanel.Visible && now > _toastUntil) _toastPanel.Visible = false;
         if (_leaveArmedUntil > 0 && now > _leaveArmedUntil) { _leaveArmedUntil = 0; _leave.Text = "Выйти"; _leave.ThemeTypeVariation = ""; }
@@ -430,7 +437,6 @@ public partial class GameScreen : Control
                 _main.SaveSetting("mute", Sound.Muted ? "1" : "0");
                 Toast(Sound.Muted ? "Звук выключен" : "Звук включён", false);
                 break;
-            case Key.F1: Toggle(Win.Help); break;
             case Key.F2: Toggle(Win.Economy); break;
             case Key.F4: Toggle(Win.Diplomacy); break;
             case Key.F6: Toggle(Win.Science); break;
@@ -555,7 +561,7 @@ public partial class GameScreen : Control
         return true;
     }
 
-    private bool HasRes(Resource r) => r == Resource.None || W.Me.Resources.Contains((int)r);
+    private bool HasRes(Resource r) => r == Resource.None || W.Me.Resources.Contains((int)r) || W.Me.ImportedResources.Contains((int)r);
     private bool CoastalCity(CityDto c) => W.Grid.Nb[c.Tile].Any(n => W.Vis[n] > 0 && W.Tiles[n].IsWater);
 
     public void TileOrdered(int tile)

@@ -293,7 +293,7 @@ public class BranchMechanicsTests
         {
             File.WriteAllText(Path.Combine(dir, "bad.json"), json);
             var log = new List<string>();
-            Assert.Equal(2, ModLoader.Load(dir, log.Add).Count);
+            Assert.Equal(2, ModLoader.Load(dir, log.Add, legacy: true).Count);
             Assert.Contains(log, l => l.Contains(expected));
         }
         finally { Directory.Delete(dir, true); }

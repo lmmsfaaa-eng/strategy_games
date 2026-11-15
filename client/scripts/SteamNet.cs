@@ -21,7 +21,7 @@ public sealed class SteamGame
 public static class SteamNet
 {
     public const uint AppId = 480;
-    private const string GameTag = "InfiniteHorizons";
+    private const string GameTag = "InfiniteHorizons-Kyzua";
     private const int Channel = 0;
 
     public static bool Ready { get; private set; }
@@ -226,6 +226,7 @@ public static class SteamNet
                 string name = SteamMatchmaking.GetLobbyData(lobby, "host");
                 if (name.Length > 32) name = name[..32];
                 bool friend = SteamFriends.HasFriend(new CSteamID(host), EFriendFlags.k_EFriendFlagImmediate);
+                if (!friend || proto != Codec.ProtocolVersion.ToString()) continue;
                 Games.Add(new SteamGame
                 {
                     HostId = host, HostName = name.Length > 0 ? name : host.ToString(),

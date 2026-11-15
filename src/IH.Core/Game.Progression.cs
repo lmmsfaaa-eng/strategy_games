@@ -4,89 +4,105 @@ namespace IH.Core;
 
 public sealed partial class Game
 {
+    private const int MaxProgressionQueue = 256;
+
     private string? SetResearch(Player p, ProgressionOrder order, string id)
     {
-        if (order == ProgressionOrder.CancelGoal)
-        {
-            p.ResearchGoal = null;
-            return null;
-        }
-        if (order == ProgressionOrder.SetGoal)
+        if (order != ProgressionOrder.ClearQueue)
         {
             var tech = Rules.Tech(id);
-            if (tech == null || (tech.Branch >= 0 && id != Rules.FutureId(tech.Branch, p.Future[tech.Branch] + 1)))
+            if (tech == null || (tech.Branch >= 0 && id != Rules.FutureId(tech.Branch, p.Future[tech.Branch] + 1)) ||
+                (order == ProgressionOrder.Immediate && !Rules.AvailableTechs(p.Known, p.Future).Any(t => t.Id == id)))
                 return "Эта технология сейчас недоступна";
-            var plan = ResearchPlan(p, id);
-            if (plan.Length == 0) return "Эта технология уже изучена или недоступна";
-            p.ResearchGoal = id;
-            p.Research = plan[0];
-            return null;
         }
-        if (order != ProgressionOrder.Immediate || !Rules.AvailableTechs(p.Known, p.Future).Any(t => t.Id == id))
-            return "Эта технология сейчас недоступна";
-        p.ResearchGoal = null;
-        p.Research = id;
-        return null;
+        return SetProgressionOrder(p.ResearchQueue, ref p.Research, order, id,
+            step => Rules.HasTech(p.Known, p.Future, step), step => Rules.Tech(step)?.Prereqs)
+            ? null : "Не удалось изменить очередь технологий";
     }
 
     private string? SetCivic(Player p, ProgressionOrder order, string id)
     {
-        if (order == ProgressionOrder.CancelGoal)
-        {
-            p.CivicGoal = null;
-            return null;
-        }
-        if (order == ProgressionOrder.SetGoal)
+        if (order != ProgressionOrder.ClearQueue)
         {
             var civic = Rules.Civic(id);
-            if (civic == null || (civic.Level > 0 && id != $"cf_{p.CivicLevel + 1}"))
+            if (civic == null || (civic.Level > 0 && id != $"cf_{p.CivicLevel + 1}") ||
+                (order == ProgressionOrder.Immediate && !Rules.AvailableCivics(p.Civics, p.CivicLevel).Any(c => c.Id == id)))
                 return "Этот институт сейчас недоступен";
-            var plan = CivicPlan(p, id);
-            if (plan.Length == 0) return "Этот институт уже принят или недоступен";
-            p.CivicGoal = id;
-            p.Civic = plan[0];
-            return null;
         }
-        if (order != ProgressionOrder.Immediate || !Rules.AvailableCivics(p.Civics, p.CivicLevel).Any(c => c.Id == id))
-            return "Этот институт сейчас недоступен";
-        p.CivicGoal = null;
-        p.Civic = id;
-        return null;
+        return SetProgressionOrder(p.CivicQueue, ref p.Civic, order, id,
+            step => Rules.HasCivic(p.Civics, p.CivicLevel, step), step => Rules.Civic(step)?.Prereqs)
+            ? null : "Не удалось изменить очередь институтов";
     }
 
-    private static string[] ResearchPlan(Player p, string? goal = null)
-        => BuildPlan(goal ?? p.ResearchGoal, id => Rules.HasTech(p.Known, p.Future, id), id => Rules.Tech(id)?.Prereqs);
+    private static bool SetProgressionOrder(List<string> queue, ref string? active, ProgressionOrder order, string id,
+        Func<string, bool> known, Func<string, string[]?> prerequisites)
+    {
+        switch (order)
+        {
+            case ProgressionOrder.Immediate:
+                queue.Clear();
+                queue.Add(id);
+                break;
+            case ProgressionOrder.ClearQueue:
+                queue.Clear();
+                break;
+            case ProgressionOrder.ToggleQueue when queue.Contains(id):
+                // The queue is topological, so every dependent appears after the item that removes it.
+                var removed = new HashSet<string>(StringComparer.Ordinal) { id };
+                foreach (string step in queue)
+                    if (prerequisites(step)?.Any(removed.Contains) == true) removed.Add(step);
+                queue.RemoveAll(removed.Contains);
+                break;
+            case ProgressionOrder.ToggleQueue:
+                var additions = BuildPlan(new[] { id }, step => known(step) || queue.Contains(step), prerequisites);
+                if (additions.Count == 0 || queue.Count + additions.Count > MaxProgressionQueue) return false;
+                queue.AddRange(additions);
+                break;
+            default:
+                return false;
+        }
+        active = queue.FirstOrDefault();
+        return true;
+    }
 
-    private static string[] CivicPlan(Player p, string? goal = null)
-        => BuildPlan(goal ?? p.CivicGoal, id => Rules.HasCivic(p.Civics, p.CivicLevel, id), id => Rules.Civic(id)?.Prereqs);
+    private static void RestoreProgressionQueues(Player p)
+    {
+        p.ResearchQueue = BuildPlan(Goals(p.ResearchQueue, p.ResearchGoal ?? p.Research),
+            id => Rules.HasTech(p.Known, p.Future, id), id => Rules.Tech(id)?.Prereqs);
+        p.CivicQueue = BuildPlan(Goals(p.CivicQueue, p.CivicGoal ?? p.Civic),
+            id => Rules.HasCivic(p.Civics, p.CivicLevel, id), id => Rules.Civic(id)?.Prereqs);
+        p.ResearchGoal = null;
+        p.CivicGoal = null;
+        p.Research = p.ResearchQueue.FirstOrDefault();
+        p.Civic = p.CivicQueue.FirstOrDefault();
+
+        static IEnumerable<string> Goals(List<string>? queue, string? legacy)
+            => queue is { Count: > 0 } ? queue : legacy != null ? new[] { legacy } : Array.Empty<string>();
+    }
 
     private static void AdvanceResearchPlan(Player p)
     {
-        if (p.ResearchGoal == null) return;
-        p.Research = ResearchPlan(p).FirstOrDefault();
-        if (p.Research == null) p.ResearchGoal = null;
+        p.ResearchQueue.RemoveAll(id => Rules.HasTech(p.Known, p.Future, id));
+        p.Research = p.ResearchQueue.FirstOrDefault();
     }
 
     private static void AdvanceCivicPlan(Player p)
     {
-        if (p.CivicGoal == null) return;
-        p.Civic = CivicPlan(p).FirstOrDefault();
-        if (p.Civic == null) p.CivicGoal = null;
+        p.CivicQueue.RemoveAll(id => Rules.HasCivic(p.Civics, p.CivicLevel, id));
+        p.Civic = p.CivicQueue.FirstOrDefault();
     }
 
-    private static string[] BuildPlan(string? goal, Func<string, bool> known, Func<string, string[]?> prerequisites)
+    private static List<string> BuildPlan(IEnumerable<string> goals, Func<string, bool> known, Func<string, string[]?> prerequisites)
     {
-        if (goal == null) return Array.Empty<string>();
         var visiting = new HashSet<string>(StringComparer.Ordinal);
         var queued = new HashSet<string>(StringComparer.Ordinal);
         var plan = new List<string>();
-        return Visit(goal) ? plan.ToArray() : Array.Empty<string>();
+        return goals.All(Visit) ? plan : new List<string>();
 
         bool Visit(string id)
         {
             if (known(id) || queued.Contains(id)) return true;
-            // Bound the walk even when a save has a malformed endless-tree target.
-            if (queued.Count + visiting.Count >= 256 || !visiting.Add(id)) return false;
+            if (queued.Count + visiting.Count >= MaxProgressionQueue || !visiting.Add(id)) return false;
             if (prerequisites(id) is not { } requirements || !requirements.All(Visit)) return false;
             visiting.Remove(id);
             queued.Add(id);

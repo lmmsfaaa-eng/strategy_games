@@ -7,7 +7,7 @@ namespace IH.Shared;
 public sealed class ClientWorld
 {
     public readonly HexGrid Grid;
-    public readonly int MyId;
+    public readonly int MyId, GameId;
     public readonly GameSettings Settings;
     public readonly TileData[] Tiles;
     /// <summary>0 = unexplored, 1 = explored (fogged), 2 = currently visible.</summary>
@@ -24,6 +24,7 @@ public sealed class ClientWorld
         Rules.SetBranches(start.Branches);
         Grid = new HexGrid(start.W, start.H);
         MyId = start.YourId;
+        GameId = start.GameId;
         Settings = start.Settings;
         Tiles = new TileData[Grid.Count];
         Vis = new byte[Grid.Count];

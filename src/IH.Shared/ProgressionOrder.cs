@@ -4,6 +4,6 @@ namespace IH.Shared;
 public enum ProgressionOrder
 {
     Immediate,
-    SetGoal,
-    CancelGoal,
+    ToggleQueue,
+    ClearQueue,
 }

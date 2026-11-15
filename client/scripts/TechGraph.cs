@@ -219,8 +219,17 @@ public partial class TechGraph : Control
             _box.SetBorderWidthAll(n.Current ? 2 : 1);
             DrawStyleBox(_box, n.Rect);
 
-            string name = (n.Known ? "✔ " : n.Current ? "▶ " : n.Order > 0 ? $"{n.Order}. " : "") + n.Tech.Name;
-            DrawString(n.Known ? font : bold, n.Rect.Position + new Vector2(9, 18), name, HorizontalAlignment.Left, NodeW - 16, 13, text);
+            string name = (n.Known ? "✔ " : n.Current ? "▶ " : "") + n.Tech.Name;
+            DrawString(n.Known ? font : bold, n.Rect.Position + new Vector2(9, 18), name,
+                HorizontalAlignment.Left, NodeW - (n.Order > 0 ? 44 : 16), 13, text);
+            if (n.Order > 0)
+            {
+                var corner = n.Rect.End - new Vector2(17, NodeH - 11);
+                string number = n.Order.ToString();
+                DrawCircle(corner, 10, n.Current ? Accent : Ui.Gold);
+                float width = bold.GetStringSize(number, fontSize: 11).X;
+                DrawString(bold, corner + new Vector2(-width / 2, 4), number, fontSize: 11, modulate: Ui.Bg);
+            }
             string sub;
             if (n.Known) sub = "изучено";
             else

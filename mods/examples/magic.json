@@ -48,7 +48,7 @@
       "Cost": 80,
       "Requires": [
         "mg_runes",
-        "sh_herbs"
+        "masonry"
       ],
       "Effect": {
         "SciPct": 0,
@@ -122,7 +122,7 @@
       "Cost": 220,
       "Requires": [
         "mg_alchemy",
-        "sh_trance"
+        "priesthood"
       ],
       "Effect": {
         "SciPct": 10,

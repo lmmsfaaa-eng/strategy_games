@@ -8,7 +8,7 @@ using IH.Shared;
 
 try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* no console */ } // Cyrillic on any Windows code page
 var opt = new ServerOptions();
-string? load = null, startupErrorFile = null, mods = "mods";
+string? load = null, startupErrorFile = null, mods = "mods", modSelection = null;
 bool sim = false, noBalance = false;
 int simTurns = 300, simPlayers = 6, simSeed = 1;
 double simStrong = 1;
@@ -28,6 +28,7 @@ for (int i = 0; i < args.Length; i++)
         case "--load": load = Next(); break;
         case "--startup-error-file": startupErrorFile = Next(); break;
         case "--mods": mods = Next(); break;
+        case "--mod-selection": modSelection = Next(); break;
         case "--export-mods": { string d = Next(); ModLoader.Export(d); Console.WriteLine($"Примеры веток записаны в {Path.GetFullPath(d)}"); return 0; }
         case "--list-ids":
             Console.WriteLine("Технологии:");
@@ -60,7 +61,10 @@ for (int i = 0; i < args.Length; i++)
 
 // custom branches: created with examples on first run, then read on every start
 if (!sim && mods != null) { try { ModLoader.Export(mods); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { } }
-Rules.SetBranches(ModLoader.Load(mods, Console.WriteLine));
+opt.LoadMods = () => ModLoader.Load(mods, Console.WriteLine, modSelection).Where(b => b.Enabled).ToArray();
+opt.Mods = opt.LoadMods();
+opt.LegacyMods = () => ModLoader.Load(mods, Console.WriteLine, legacy: true);
+Rules.SetBranches(opt.Mods);
 
 if (sim) { Simulation.Run(simTurns, simPlayers, simSeed, noBalance, opt.Balance, true, simStrong, simMap); return 0; }
 
