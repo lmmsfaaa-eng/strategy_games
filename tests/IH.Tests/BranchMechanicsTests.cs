@@ -159,7 +159,9 @@ public class BranchMechanicsTests
     {
         var (g, p, city, _) = Setup();
         var field = Field(g, city);
-        int at = field[0], beside = field.First(t => g.Grid.Distance(at, t) == 1), farTile = field.First(t => g.Grid.Distance(at, t) >= 2);
+        int at = field.First(tile => field.Any(t => g.Grid.Distance(tile, t) == 1) && field.Any(t => g.Grid.Distance(tile, t) == 2));
+        int beside = field.First(t => g.Grid.Distance(at, t) == 1);
+        int farTile = field.First(t => g.Grid.Distance(at, t) == 2); // too far to summon, close enough to grow a forest
         var shaman = Add(g, 0, "shaman", at);
         var warrior = g.UnitsOf(0).First(u => u.Def.Id == "warrior");
 

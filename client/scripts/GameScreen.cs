@@ -262,7 +262,7 @@ public partial class GameScreen : Control
         _windowScroll.AddChild(_windowBody);
         _windowBody.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         var close = Ui.Btn("Закрыть  Esc", () => Toggle(Win.None), size: 13);
-        _window.AddChild(Ui.V(8, Ui.H(10, _windowIcon, _windowTitle, Ui.Spacer(), close), _windowTabs, new HSeparator(), _windowScroll));
+        _window.AddChild(Ui.V(8, Ui.H(10, _windowIcon, _windowTitle, Ui.Spacer(), close), _windowTabs, new HSeparator(), _progressionSummary, _windowScroll));
         _window.Visible = false;
         center.AddChild(_window);
 
@@ -447,7 +447,10 @@ public partial class GameScreen : Control
 
     private UnitDto? Selected => Map.SelectedUnit >= 0 && W.Units.TryGetValue(Map.SelectedUnit, out var u) ? u : null;
 
-    private bool IsReady(UnitDto u) => u.Owner == W.MyId && u.Moves > 0 && !u.Fortified && u.Work == 0 && u.Goto < 0 && !_skipped.Contains(u.Id);
+    private bool IsReady(UnitDto u) => u.Owner == W.MyId && u.Moves > 0 && !u.Fortified && !u.AutoExplore && u.Work == 0
+        && u.Goto < 0 && !_skipped.Contains(u.Id);
+
+    internal bool IsAiming => _aiming != null;
 
     public void SelectNext(bool wrap)
     {
@@ -566,16 +569,15 @@ public partial class GameScreen : Control
         if (tile < 0 || Selected is not { } u || u.Owner != W.MyId) return;
         if (_aiming != null) { StopAiming("Отменено"); return; }
         if (!W.MyTurn) { Toast("Сейчас не ваш ход", true); return; }
-        if (u.Def.X.Ranged > 0 && u.Moves > 0 && W.Grid.Distance(u.Tile, tile) <= u.Def.X.Ranged
+        if (u.Def.X.Ranged > 0 && W.Grid.Distance(u.Tile, tile) <= u.Def.X.Ranged
             && W.UnitsAt(tile).Any(o => o.Owner != W.MyId && W.Players.TryGetValue(o.Owner, out var foe) && foe.AtWar))
         {
             // enemies within reach: this is a shot, not a march, so there is no path to predict
             Net.SendCommand(CmdType.MoveUnit, u.Id, tile);
-            Sound.Play(Sfx.Id.Combat);
+            Sound.Play(u.Moves > 0 ? Sfx.Id.Combat : Sfx.Id.Click);
             _advancePending = true;
             return;
         }
-        if (u.Moves <= 0) { Toast("У этого юнита не осталось очков движения в этом ходу", true); Sound.Play(Sfx.Id.Error); return; }
         Map.OrderMove(u, tile);
         Sound.Play(Sfx.Id.Move);
         _advancePending = true;

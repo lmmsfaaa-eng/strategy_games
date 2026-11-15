@@ -12,6 +12,7 @@ public partial class GameScreen
 {
     // ----------------------------------------------------------- windows
     private float _wrapW = 760;
+    private readonly VBoxContainer _progressionSummary = Ui.V();
 
     public void OpenCity(int id)
     {
@@ -77,6 +78,8 @@ public partial class GameScreen
         }
         int scroll = _windowScroll.ScrollVertical, scrollX = _windowScroll.ScrollHorizontal;
         Ui.Clear(_windowBody);
+        Ui.Clear(_progressionSummary);
+        _progressionSummary.Visible = false;
         switch (_win)
         {
             case Win.Science: BuildScience(); break;
@@ -267,11 +270,12 @@ public partial class GameScreen
         var me = W.Me;
         _windowTitle.Text = "Наука и дерево технологий";
         var cur = Rules.Tech(me.Research);
-        Add(Ui.Lbl(cur == null ? "Исследование не выбрано — очки науки копятся впустую." : $"Сейчас изучается: {cur.Name}", 15, cur == null ? Ui.Bad : Ui.Science));
+        Add(Ui.Lbl(cur == null ? "Выберите технологию, чтобы потратить накопленную науку." : $"Сейчас изучается: {cur.Name}", 15, cur == null ? Ui.Bad : Ui.Science));
         Add(Ui.Lbl($"Наука за ход: +{me.SciRate}" + (me.EchoBonus > 0 ? $" (из них «научное эхо» от контактов: +{me.EchoBonus})" : "") +
                    $" · изучено технологий: {me.Known.Length + me.Future.Sum()}", 14));
         if (me.Future.Any(f => f > 0))
             Add(Ui.Lbl("Технологии будущего: " + string.Join(", ", me.Future.Select((lv, b) => $"{Rules.FutureBranchNames[b]} {lv}")), 13, Ui.Dim));
+        BuildProgressionPlan(me.ResearchPlan, CmdType.SetResearch, id => Rules.Tech(id)?.Name ?? id);
         BuildTechTree();
         Heading("Доступно для изучения (дерево бесконечно)");
         foreach (var a in me.Available.OrderBy(a => a.Cost))
@@ -295,8 +299,8 @@ public partial class GameScreen
     private void BuildTechTree()
     {
         Heading("Дерево технологий");
-        Add(Ui.Lbl("Слева направо — от ранних к поздним; линии ведут от нужных предшественников.\nЗелёные изучены, светлые доступны (нажмите), серые закрыты. ▼ — скидка догоняющего. Прокрутка — полосой внизу или Shift+колесо.", 12, Ui.Dim));
-        var graph = TechGraph.ForScience(W.Me, id => Net.SendCommand(CmdType.SetResearch, s: id));
+        Note("Нажмите на любую неизученную технологию. Игра сама начнёт с её предпосылок. Цифры показывают порядок изучения, ▼ — скидку догоняющего. Прокрутка — полосой внизу или Shift+колесо.");
+        var graph = TechGraph.ForScience(W.Me, id => Net.SendCommand(CmdType.SetResearch, (int)ProgressionOrder.SetGoal, s: id));
         Add(graph);
         if (_scrollToFrontier)
         {
@@ -311,13 +315,14 @@ public partial class GameScreen
         var me = W.Me;
         _windowTitle.Text = "Социальные институты";
         var cur = Rules.Civic(me.Civic);
-        Add(Ui.Lbl(cur == null ? "Институт не выбран — культура копится впустую." : $"Сейчас принимается: {cur.Name} ({me.CivicProgress}/{cur.Cost})",
+        Add(Ui.Lbl(cur == null ? "Выберите институт, чтобы потратить накопленную культуру." : $"Сейчас принимается: {cur.Name} ({me.CivicProgress}/{cur.Cost})",
             15, cur == null ? Ui.Bad : Ui.Gold));
         Add(Ui.Lbl($"Культура империи: +{me.CultureRate} за ход (её дают города: монументы, храмы, театры). Принято институтов: {me.Civics.Length + me.CivicLevel}.", 13));
         var total = Rules.CivicBonus(me.Civics, me.CivicLevel).Describe();
         Add(Ui.Lbl("Действующие бонусы: " + (total.Length > 0 ? total : "пока нет"), 13, Ui.Good));
-        Add(Ui.Lbl($"Каждый институт даёт постоянный бонус всей империи. Нажмите на доступный узел, чтобы принять его. Наука и институты подпитывают друг друга: каждая изученная технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.", 12, Ui.Dim));
-        var graph = TechGraph.ForCivics(me, id => Net.SendCommand(CmdType.SetCivic, s: id));
+        Note($"Нажмите на любой непринятый институт. Игра пройдёт все его предпосылки по порядку. Наука и институты подпитывают друг друга: каждая изученная технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.");
+        BuildProgressionPlan(me.CivicPlan, CmdType.SetCivic, id => Rules.Civic(id)?.Name ?? id);
+        var graph = TechGraph.ForCivics(me, id => Net.SendCommand(CmdType.SetCivic, (int)ProgressionOrder.SetGoal, s: id));
         graph.Accent = Ui.Culture;
         Add(graph);
         if (_scrollToFrontier)
@@ -340,6 +345,27 @@ public partial class GameScreen
             if (cost < c.Cost) info.AddChild(Ui.Lbl($"Эффект низкой базы: −{100 - cost * 100 / c.Cost}% (обычная цена {c.Cost})", 12, Ui.Good));
             Add(Ui.H(12, b, info));
         }
+    }
+
+    private void BuildProgressionPlan(string[] plan, CmdType command, Func<string, string> name)
+    {
+        if (plan.Length == 0) return;
+        var summary = Ui.V(4, Ui.Lbl($"Цель · {name(plan[^1])}", 15, Ui.Gold, bold: true));
+        summary.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        if (plan.Length > 1)
+        {
+            string next = string.Join(" → ", plan.Take(4).Select(name));
+            if (plan.Length > 4) next += $" → ещё {plan.Length - 4}";
+            var steps = Ui.Lbl(next, 13, Ui.Dim);
+            steps.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+            steps.MouseFilter = MouseFilterEnum.Pass;
+            steps.TooltipText = string.Join(" → ", plan.Select(name));
+            summary.AddChild(steps);
+        }
+        _progressionSummary.AddChild(Ui.Card(Ui.H(10, summary, Ui.Btn("Снять цель",
+            () => Net.SendCommand(command, (int)ProgressionOrder.CancelGoal),
+            "Завершить текущий шаг и остановить очередь"))));
+        _progressionSummary.Visible = true;
     }
 
     private int _branchTab;
@@ -785,7 +811,8 @@ public partial class GameScreen
         void Topic(Ico icon, Color color, string title, string text)
             => Add(Ui.Card(Ui.H(10, new Icon(icon, color, 20), Ui.V(2, Ui.Lbl(title, 14, color, true), Ui.Wrap(text, Math.Min(_wrapW, 900) - 70, 13))), 9));
         Topic(Ico.City, Ui.Prod, "Города", "Жители обрабатывают клетки вокруг города: пища растит население, производство строит, коммерция делится на науку и золото. Рабочие улучшают клетки и подключают ресурсы: бонусные усиливают клетку, стратегические нужны для юнитов, роскошь поднимает довольство.");
-        Topic(Ico.Science, Ui.Science, "Наука и культура", $"Наука открывает технологии, культура — социальные институты; оба дерева бесконечны. Они подпитывают друг друга: каждая технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.");
+        Topic(Ico.Sword, Ui.Good, "Маршруты и разведка", "Наведите курсор на разведанную клетку, чтобы увидеть маршрут и ход прибытия. Число 1 означает текущий ход. Щёлкните ПКМ, чтобы отдать приказ. Авторазведка ищет доступные края тумана, а север и юг карты соединены так же, как запад и восток.");
+        Topic(Ico.Science, Ui.Science, "Наука и культура", $"Выберите любую цель в дереве. Игра сама изучит её предпосылки по порядку. Деревья подпитывают друг друга: каждая технология добавляет {Rules.Inspiration * 100:0}% своей цены к текущему институту, и наоборот.");
         Topic(Ico.Branch, Ui.Power, "Ветки развития", "Магия и ветки из модов растут параллельно. Узлы дают бонусы, юнитов, здания и действия. Обряды предков открывают шаманство во вкладке «Религия» (F8).");
         Topic(Ico.Faith, Ui.Faith, "Религия", "Вера покупает мирные проекты и основывает религию. Верование действует в каждом городе, который ей следует; религия расходится сама и с миссионерами. Единая вера успокаивает города и сближает державы.");
         Topic(Ico.Favor, Ui.Favor, "Державы и конгресс", "В разделе «Державы» (F4) заключают сделки, открывают границы, создают оборонительные союзы и делятся показателями. Одобрение можно обменять, потратить на разведку или отдать как голоса в конгрессе.");

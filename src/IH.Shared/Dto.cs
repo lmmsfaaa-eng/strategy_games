@@ -29,6 +29,7 @@ public enum CmdType : byte
     StartEspionage,  // A=target
     WithdrawProposal,// A=proposal id
     RespondDefense,  // A=call id, B=0 decline / 1 accept
+    AutoExplore = 80, // A=unit
     SandboxResources = 240, SandboxSpawn = 241, SandboxReveal = 242,
 }
 
@@ -164,10 +165,12 @@ public sealed class UnitDto : IWire
     public int Id, Owner, Type, Tile, Hp, Moves, WorkTurns, Goto = -1; public byte Work; public bool Fortified;
     /// <summary>Turns a summoned unit has left (0 = permanent) and its active shield in percent.</summary>
     public int Expires, Shield;
+    public bool AutoExplore;
     public void Sync(Wire w)
     {
         w.I(ref Id); w.I(ref Owner); w.I(ref Type); w.I(ref Tile); w.I(ref Hp); w.I(ref Moves);
         w.I(ref WorkTurns); w.I(ref Goto); w.By(ref Work); w.B(ref Fortified); w.I(ref Expires); w.I(ref Shield);
+        w.B(ref AutoExplore);
     }
     public UnitDef Def => Rules.Units[Type];
 }
@@ -293,6 +296,7 @@ public sealed class MeDto : IWire
     public string Resolution = "", Proposed = "";
     public int VotesFor, VotesAgainst;
     public string Research = "";
+    public string[] ResearchPlan = Array.Empty<string>(), CivicPlan = Array.Empty<string>();
     public string[] Known = Array.Empty<string>();
     public int[] Future = new int[4];
     public float Itr, Pressure, Lag, SciMult = 1, CulMult = 1, UpkeepMult = 1, Sprawl;
@@ -317,6 +321,7 @@ public sealed class MeDto : IWire
         w.SA(ref Nodes); w.SA(ref BranchCurrent); w.IA(ref BranchProgress); w.IA(ref BranchRate); w.IA(ref Cooldowns); w.IA(ref Power); w.IA(ref PowerRate);
         w.A(ref CivicCosts); w.A(ref NodeCosts); w.I(ref TradeLuxuries); w.I(ref WarWeariness); w.I(ref Brethren); w.I(ref StateReligion);
         w.IA(ref Milestones); w.S(ref Resolution); w.S(ref Proposed); w.I(ref VotesFor); w.I(ref VotesAgainst);
+        w.SA(ref ResearchPlan); w.SA(ref CivicPlan);
     }
 }
 

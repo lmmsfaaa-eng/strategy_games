@@ -47,7 +47,7 @@ public partial class CityBanners : Control
     {
         // redraw only when the camera or the world has changed, so an idle game costs nothing
         var map = _screen.Map;
-        string sig = $"{map.Cam.X:0.00}|{map.Cam.Y:0.00}|{map.Zoom:0.000}|{map.Yaw:0.000}|{_screen.W.Revision}|{map.UnitProjectionRevision}|{Size.X}|{Size.Y}";
+        string sig = $"{map.Cam.X:0.00}|{map.Cam.Y:0.00}|{map.Zoom:0.000}|{map.Yaw:0.000}|{_screen.W.Revision}|{map.UnitProjectionRevision}|{Size.X}|{Size.Y}|{map.HoverTile}|{map.HoverTurns}|{_screen.IsAiming}";
         int hover = UnitAt(GetLocalMousePosition());
         if (sig == _signature && hover == _hoverUnit) return;
         _signature = sig;
@@ -66,9 +66,9 @@ public partial class CityBanners : Control
         int fs = lod >= 2 ? 14 : lod == 1 ? 12 : 10;
         var font = Ui.Bold;
         float h = fs + 10;
-        foreach (var c in w.Cities.Values.OrderBy(c => c.Owner == w.MyId).ThenBy(c => c.Id))
+        var cities = w.Cities.Values.Where(c => w.Vis[c.Tile] > 0).OrderBy(c => c.Owner == w.MyId).ThenBy(c => c.Id);
+        foreach (var (c, anchor) in cities.SelectMany(c => map.ProjectTileImages(c.Tile, lod >= 2 ? 1.75f : 1.2f).Select(at => (c, at))))
         {
-            if (w.Vis[c.Tile] == 0 || !map.Project(c.Tile, lod >= 2 ? 1.75f : 1.2f, out var anchor)) continue;
             if (anchor.X < -200 || anchor.Y < -80 || anchor.X > Size.X + 200 || anchor.Y > Size.Y + 80) continue;
             var color = map.OwnerColor(c.Owner);
             bool mine = c.Owner == w.MyId;
@@ -131,26 +131,53 @@ public partial class CityBanners : Control
                 d.DisorderTurns > 0 || item.Length == 0 ? Ui.Col(0xFF9C92) : Ui.Col(0xC8D0E0));
         }
         DrawUnits(map);
+        DrawRouteArrival(map);
+    }
+
+    private void DrawRouteArrival(MapView map)
+    {
+        if (_screen.IsAiming || map.HoverTurns == 0 || map.HoverTile < 0 ||
+            !map.ProjectHovered(0.28f, out var anchor)) return;
+        var viewport = new Rect2(Vector2.Zero, Size);
+        const float radius = 13f;
+        Vector2 at = anchor;
+        foreach (var offset in new[] { Vector2.Zero, new Vector2(0, 25), new Vector2(25, 0), new Vector2(-25, 0) })
+        {
+            var candidate = anchor + offset;
+            var bounds = BadgeRect(candidate, radius);
+            if (!viewport.Encloses(bounds) || Blocked(bounds)) continue;
+            at = candidate;
+            break;
+        }
+        if (at != anchor) DrawLine(anchor, at, Ui.Gold, 1.2f, true);
+        DrawCircle(at, radius + 1, Ui.Gold, antialiased: true);
+        DrawCircle(at, radius - 1, Ui.Col(0x20312D, 0.95f), antialiased: true);
+        const int fs = 14;
+        var font = Ui.Bold;
+        string label = map.HoverTurns.ToString();
+        float width = font.GetStringSize(label, HorizontalAlignment.Left, -1, fs).X;
+        DrawString(font, at + new Vector2(-width / 2, 5), label, HorizontalAlignment.Left, -1, fs, Ui.Text);
     }
 
     private void DrawUnits(MapView map)
     {
         var w = _screen.W;
         var formations = new List<(int tile, List<(UnitDto unit, Vector2 head)> members)>();
-        var standing = new Dictionary<int, List<(UnitDto unit, Vector2 head)>>();
+        var standing = new Dictionary<(int Tile, Vector2I Copy), List<(UnitDto unit, Vector2 head)>>();
         foreach (var unit in w.Units.Values.OrderBy(u => u.Id))
+        foreach (var (copy, head, moving) in map.ProjectUnitImages(unit))
         {
-            if (!map.ProjectUnit(unit.Id, out var head, out bool moving)) continue;
             if (!new Rect2(Vector2.Zero, Size).Grow(80).HasPoint(head)) continue;
             if (moving)
             {
                 formations.Add((unit.Tile, new() { (unit, head) }));
                 continue;
             }
-            if (!standing.TryGetValue(unit.Tile, out var members))
+            var key = (unit.Tile, copy);
+            if (!standing.TryGetValue(key, out var members))
             {
                 members = new();
-                standing.Add(unit.Tile, members);
+                standing.Add(key, members);
                 formations.Add((unit.Tile, members));
             }
             members.Add((unit, head));
@@ -191,8 +218,9 @@ public partial class CityBanners : Control
             }
         }
 
-        int hovered = UnitAt(GetLocalMousePosition());
-        var hover = _unitHit.Find(x => x.id == hovered);
+        var mouse = GetLocalMousePosition();
+        int hovered = UnitAt(mouse);
+        var hover = _unitHit.FindLast(x => x.id == hovered && x.center.DistanceSquaredTo(mouse) <= x.radius * x.radius);
         if (hovered < 0 || !w.Units.TryGetValue(hovered, out var data)) return;
         string label = data.Hp < 100 ? $"{data.Def.Name} · {data.Hp}%" : data.Def.Name;
         const int fs = 12;

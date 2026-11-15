@@ -36,7 +36,7 @@ public sealed class Unit
     /// <summary>Summoned units vanish on this turn (0 = permanent). A shield adds ShieldPct to defence while the turn is below ShieldUntil.</summary>
     public int Expires, ShieldPct, ShieldUntil;
     public WorkKind Work;
-    public bool Fortified;
+    public bool Fortified, AutoExplore, QueuedRangedAttack;
     public UnitDef Def => Rules.Units[Type];
     public int MaxMoves => Def.Moves * Rules.MovePoint;
 }
@@ -68,7 +68,7 @@ public sealed class Player
     public string Name = "";
     public bool IsAI, Alive = true, Neutral, EndedTurn;
     public int Gold = 30, Slider = 70, ResearchProgress;
-    public string? Research;
+    public string? Research, ResearchGoal;
     public HashSet<string> Known = new();
     public int[] Future = new int[4];
     public long TechPoints;
@@ -79,7 +79,7 @@ public sealed class Player
     public List<EspionageDto> Espionage = new();
     // social institutions
     public HashSet<string> Civics = new();
-    public string? Civic;
+    public string? Civic, CivicGoal;
     public int CivicLevel, CivicProgress;
     public double CultureRate;
     /// <summary>Sum of all adopted institutions (derived every refresh).</summary>
@@ -143,7 +143,8 @@ public sealed class GameState
     public int W, H, Turn = 1, CurrentPlayer, NextId = 1;
     public ulong Rng = 0x9E3779B97F4A7C15;
     public TileData[] Tiles = Array.Empty<TileData>();
-    public Dictionary<int, Unit> Units = new();
+    // Stable iteration survives save/load even when removing units leaves gaps in the IDs.
+    public SortedDictionary<int, Unit> Units = new();
     public Dictionary<int, City> Cities = new();
     public List<Player> Players = new();
     public Dictionary<int, Relation> Relations = new();

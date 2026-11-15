@@ -65,18 +65,32 @@ public sealed class ClientWorld
     {
         if (!Grid.Valid(target) || Vis[target] == 0) return null;
         var mover = Rules.MoverFor(u.Def, Knows);
-        var full = Units.Values.Where(other => other.Owner == u.Owner && other.Id != u.Id)
-            .GroupBy(other => other.Tile).Where(stack => stack.Count() >= Rules.MaxUnitsPerTile).Select(stack => stack.Key).ToHashSet();
+        var occupants = Units.Values.ToLookup(unit => unit.Tile);
+        bool CanAttack(int tile, int owner) => tile == target && u.Def.Role == UnitRole.Military
+            && Players.TryGetValue(owner, out var player) && (player.AtWar || player.Neutral);
         return Grid.FindPath(u.Tile, target, (from, to) =>
         {
-            if (Vis[to] == 0 || full.Contains(to)) return -1;
+            if (Vis[to] == 0) return -1;
             int c = Rules.MoveCost(Tiles[from], Tiles[to], mover);
             if (c < 0) return -1;
+            if (occupants[to].Count(other => other.Owner == u.Owner && other.Id != u.Id) >= Rules.MaxUnitsPerTile)
+                return -1;
+            if (occupants[to].Any(other => other.Owner != u.Owner && !CanAttack(to, other.Owner))) return -1;
+            if (CityAt(to) is { } city && city.Owner != u.Owner && !CanAttack(to, city.Owner)) return -1;
             int owner = Tiles[to].Owner;
-            if (owner >= 0 && owner != MyId && Players.TryGetValue(owner, out var p) && !p.AtWar && !p.OpenBorders && !p.Neutral)
+            if (u.Def.Role != UnitRole.Missionary && owner >= 0 && owner != u.Owner &&
+                Players.TryGetValue(owner, out var p) && !p.AtWar && !p.OpenBorders && !p.Neutral)
                 return -1;
             return c;
         }, 6000);
+    }
+
+    public int PredictArrivalTurn(UnitDto unit, IReadOnlyList<int> path)
+    {
+        if (path.Count == 0) return 0;
+        var mover = Rules.MoverFor(unit.Def, Knows);
+        var costs = path.Select((to, i) => Rules.MoveCost(Tiles[i == 0 ? unit.Tile : path[i - 1]], Tiles[to], mover));
+        return Rules.ArrivalTurn(unit.Moves, unit.Def.Moves * Rules.MovePoint, costs);
     }
 
     /// <summary>What the player can foresee about an attack: the server's formulas fed with what this client sees.</summary>

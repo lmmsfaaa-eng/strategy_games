@@ -449,6 +449,18 @@ public static class Rules
 
     public static Mover MoverFor(UnitDef d, Func<string?, bool> knows) => new(d.Sea, knows("sailing"), knows("astronomy"), d.X.Flying);
 
+    /// <summary>Arrival turn for a route, with turn 1 denoting the current turn.</summary>
+    public static int ArrivalTurn(int remaining, int maxMoves, IEnumerable<int> stepCosts)
+    {
+        int turn = 1;
+        foreach (int cost in stepCosts)
+        {
+            if (remaining <= 0) { turn++; remaining = maxMoves; }
+            remaining -= cost; // an expensive last step spends any remaining movement this turn
+        }
+        return turn;
+    }
+
     /// <summary>Step cost in half-points; -1 when the unit cannot enter the destination at all.</summary>
     public static int MoveCost(in TileData from, in TileData to, Mover m)
     {

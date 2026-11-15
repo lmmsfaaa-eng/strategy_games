@@ -105,7 +105,8 @@ public sealed partial class Game
         foreach (var u in UnitsOf(p.Id).ToList())
         {
             u.Moves = u.MaxMoves;
-            if (u.Goto >= 0) ContinueGoto(u);
+            if (u.AutoExplore) ContinueExploring(p, u);
+            else if (u.Goto >= 0) ContinueGoto(u);
         }
     }
 
@@ -406,6 +407,7 @@ public sealed partial class Game
                 p.CivicProgress -= AntiSnowball.CivicCost(this, p, civic);
                 if (civic.Level > 0) p.CivicLevel = Math.Max(p.CivicLevel, civic.Level); else p.Civics.Add(civic.Id);
                 p.Civic = null;
+                AdvanceCivicPlan(p);
                 p.CivicPoints += civic.Cost;
                 p.ResearchProgress += (int)(civic.Cost * Rules.Inspiration); // a new institution inspires its scholars
                 Emit(EventKind.CivicDone, s: civic.Id, only: p.Id);
@@ -513,6 +515,7 @@ public sealed partial class Game
         p.TechPoints += t.Cost;
         p.CivicProgress += (int)(t.Cost * Rules.Inspiration); // discoveries feed public life
         if (p.Research == t.Id) p.Research = null;
+        AdvanceResearchPlan(p);
         // newly understood strategic resources appear on every tile the player has already explored
         for (int i = 0; i < p.KnownTiles.Length && i < S.Tiles.Length; i++)
         {

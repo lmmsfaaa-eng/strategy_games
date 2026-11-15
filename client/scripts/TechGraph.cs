@@ -8,7 +8,7 @@ namespace IH.Client;
 
 /// <summary>
 /// The technology tree drawn as a left-to-right graph: a tech sits one column to the right of its deepest
-/// prerequisite and is joined to every prerequisite by a curve. Click an available tech to research it.
+/// prerequisite and is joined to every prerequisite by a curve.
 /// </summary>
 public partial class TechGraph : Control
 {
@@ -18,6 +18,7 @@ public partial class TechGraph : Control
         public int Col, Row;
         public Rect2 Rect;
         public bool Known, Current;
+        public int Order;
         public TechCostDto? Avail;
     }
 
@@ -26,6 +27,7 @@ public partial class TechGraph : Control
     private readonly Dictionary<string, Node> _byId = new();
     private readonly Action<string> _research;
     private readonly int _sciRate, _progress;
+    private readonly bool _acceptGoals;
     private Node? _hover;
 
     /// <summary>X position of the first column that still has something to research.</summary>
@@ -39,7 +41,7 @@ public partial class TechGraph : Control
     public static TechGraph ForScience(MeDto me, Action<string> research) => new(
         Rules.Techs, Enumerable.Range(0, 4).Select(b => Rules.Tech(Rules.FutureId(b, me.Future[b] + 1))!).ToList(),
         new HashSet<string>(me.Known), me.Available.ToDictionary(a => a.Id), me.Research, me.SciRate, me.ResearchProgress,
-        "науки", Rules.Tech, GameScreen.Unlocks, research);
+        "науки", Rules.Tech, GameScreen.Unlocks, research, plan: me.ResearchPlan);
 
     /// <summary>The social institutions tree, advanced by culture.</summary>
     public static TechGraph ForCivics(MeDto me, Action<string> adopt)
@@ -52,7 +54,7 @@ public partial class TechGraph : Control
         return new TechGraph(Rules.Civics.Select(Conv).ToList(), new List<TechDef> { Conv(Rules.Civic($"cf_{me.CivicLevel + 1}")!) },
             new HashSet<string>(me.Civics), avail, me.Civic, me.CultureRate, me.CivicProgress, "культуры",
             id => Rules.Civic(id) is { } c ? Conv(c) : null,
-            t => (Rules.Civic(t.Id)?.Effect.Describe() ?? "") + (t.Id == Rules.ReligionCivic ? "\nОткрывает религию и шаманство" : ""), adopt);
+            t => (Rules.Civic(t.Id)?.Effect.Describe() ?? "") + (t.Id == Rules.ReligionCivic ? "\nОткрывает религию и шаманство" : ""), adopt, plan: me.CivicPlan);
     }
 
     /// <summary>A custom (mod) branch. Requirements from other trees are not drawn as nodes; they show in the node text.</summary>
@@ -90,11 +92,12 @@ public partial class TechGraph : Control
 
     private TechGraph(IReadOnlyList<TechDef> tree, IReadOnlyList<TechDef> endless, HashSet<string> known, Dictionary<string, TechCostDto> avail,
         string current, int rate, int progress, string unit, Func<string, TechDef?> lookup, Func<TechDef, string> unlocks, Action<string> research,
-        Func<int, string>? header = null, Func<TechDef, string>? note = null)
+        Func<int, string>? header = null, Func<TechDef, string>? note = null, string[]? plan = null)
     {
         _header = header; _note = note;
         _research = research; _unit = unit; _lookup = lookup; _unlocks = unlocks;
         _sciRate = rate; _progress = progress;
+        _acceptGoals = plan != null;
 
         var depth = new Dictionary<string, int>();
         int Depth(TechDef t) => depth.TryGetValue(t.Id, out int d) ? d
@@ -105,6 +108,9 @@ public partial class TechGraph : Control
         // the endless future branches: only the next level of each is shown, to the right of everything else
         foreach (var t in endless) Add(new Node { Tech = t, Col = lastCol + 1 });
         foreach (var n in _nodes) { n.Avail = avail.GetValueOrDefault(n.Tech.Id); n.Current = current == n.Tech.Id; }
+        if (plan != null)
+            for (int i = 0; i < plan.Length; i++)
+                if (_byId.TryGetValue(plan[i], out var node)) node.Order = i + 1;
 
         // order every column by where its prerequisites sit, so the curves cross as little as possible
         float maxRows = 0;
@@ -123,7 +129,8 @@ public partial class TechGraph : Control
             n.Rect = new Rect2(Pad + n.Col * (NodeW + GapX), Pad + HeaderH + offset + n.Row * (NodeH + GapY), NodeW, NodeH);
         }
         CustomMinimumSize = new Vector2(Pad * 2 + (lastCol + 2) * (NodeW + GapX) - GapX, Pad * 2 + HeaderH + maxRows * (NodeH + GapY));
-        int frontier = _nodes.Where(n => !n.Known).Min(n => n.Col);
+        int frontier = _byId.TryGetValue(current, out var active)
+            ? active.Col : _nodes.Where(n => !n.Known).Select(n => n.Col).DefaultIfEmpty(0).Min();
         FrontierX = Math.Max(0, Pad + (frontier - 1) * (NodeW + GapX));
         MouseFilter = MouseFilterEnum.Stop;
     }
@@ -131,6 +138,7 @@ public partial class TechGraph : Control
     private void Add(Node n) { _nodes.Add(n); _byId[n.Tech.Id] = n; }
 
     private Node? NodeAt(Vector2 p) => _nodes.FirstOrDefault(n => n.Rect.HasPoint(p));
+    private bool CanSelect(Node? n) => n != null && !n.Known && (_acceptGoals || n.Avail != null);
 
     public override void _GuiInput(InputEvent e)
     {
@@ -138,12 +146,12 @@ public partial class TechGraph : Control
         {
             var n = NodeAt(mm.Position);
             if (n != _hover) { _hover = n; QueueRedraw(); }
-            MouseDefaultCursorShape = n is { Avail: not null } ? CursorShape.PointingHand : CursorShape.Arrow;
+            MouseDefaultCursorShape = CanSelect(n) ? CursorShape.PointingHand : CursorShape.Arrow;
         }
         else if (e is InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb)
         {
             var n = NodeAt(mb.Position);
-            if (n is { Avail: not null }) { _research(n.Tech.Id); AcceptEvent(); }
+            if (n != null && CanSelect(n)) { _research(n.Tech.Id); AcceptEvent(); }
         }
     }
 
@@ -152,7 +160,8 @@ public partial class TechGraph : Control
         var n = NodeAt(at);
         if (n == null) return "";
         string pre = n.Tech.Prereqs.Length == 0 ? "" : "\nТребует: " + string.Join(", ", n.Tech.Prereqs.Select(p => _lookup(p)?.Name ?? p));
-        string state = n.Known ? "Изучено" : n.Current ? "Изучается сейчас" : n.Avail != null ? "Нажмите, чтобы изучать" : "Пока недоступно";
+        string state = n.Known ? "Изучено" : n.Current ? "Изучается сейчас" : n.Order > 0 ? $"В очереди · шаг {n.Order}"
+            : n.Avail != null ? "Нажмите, чтобы изучать" : _acceptGoals ? "Нажмите, чтобы изучить после предпосылок" : "Пока недоступно";
         string discount = n.Avail != null && n.Avail.Cost < n.Avail.BaseCost ? $"\nЭффект низкой базы: {n.Avail.Cost} вместо {n.Avail.BaseCost}" : "";
         return $"{n.Tech.Name} — {Rules.EraName(n.Tech.Era)}\n{state}\nДаёт: {_unlocks(n.Tech)}{pre}{discount}";
     }
@@ -203,13 +212,14 @@ public partial class TechGraph : Control
             else if (n.Current) { bg = Accent.Darkened(0.68f); edge = Accent; text = Colors.White; }
             else if (n.Avail != null) { bg = Ui.Col(0x27324F); edge = Ui.Col(0x8695BC); text = Colors.White; }
             else { bg = Ui.Col(0x111725); edge = cLocked; text = Ui.Col(0x7C869C); }
-            if (n == _hover && n.Avail != null) bg = bg.Lightened(0.1f);
+            if (n.Order > 0 && !n.Current) { edge = Ui.Gold; text = Ui.Text; }
+            if (n == _hover && CanSelect(n)) bg = bg.Lightened(0.1f);
             _box.BgColor = bg;
             _box.BorderColor = n == _hover ? Ui.Gold : edge;
             _box.SetBorderWidthAll(n.Current ? 2 : 1);
             DrawStyleBox(_box, n.Rect);
 
-            string name = (n.Known ? "✔ " : n.Current ? "▶ " : "") + n.Tech.Name;
+            string name = (n.Known ? "✔ " : n.Current ? "▶ " : n.Order > 0 ? $"{n.Order}. " : "") + n.Tech.Name;
             DrawString(n.Known ? font : bold, n.Rect.Position + new Vector2(9, 18), name, HorizontalAlignment.Left, NodeW - 16, 13, text);
             string sub;
             if (n.Known) sub = "изучено";

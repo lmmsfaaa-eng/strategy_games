@@ -20,7 +20,7 @@ public partial class Minimap : Control
     {
         _screen = screen;
         var g = screen.W.Grid;
-        _img = Image.CreateEmpty(g.W * 2 + 1, g.H, false, Image.Format.Rgb8);
+        _img = Image.CreateEmpty(g.W * 2, g.H, false, Image.Format.Rgb8);
         _tex = ImageTexture.CreateFromImage(_img);
         TextureFilter = TextureFilterEnum.Nearest;
         float w = 250f;
@@ -50,7 +50,7 @@ public partial class Minimap : Control
             }
             int px = x * 2 + (y & 1);
             _img.SetPixel(px, y, c);
-            _img.SetPixel(px + 1, y, c);
+            _img.SetPixel((px + 1) % _img.GetWidth(), y, c);
         }
         foreach (var u in w.Units.Values)
             if (u.Owner == w.MyId) { int px = u.Tile % w.Grid.W * 2 + (u.Tile / w.Grid.W & 1); _img.SetPixel(px, u.Tile / w.Grid.W, Colors.Yellow); }
@@ -63,10 +63,16 @@ public partial class Minimap : Control
         DrawTextureRect(_tex, new Rect2(Vector2.Zero, Size), false);
         var map = _screen.Map;
         var total = map.MapPixelSize;
-        var view = map.ViewSize;
+        var view = map.ViewSize.Min(total);
         var topLeft = (map.Cam - view / 2) / total * Size;
-        var rect = new Rect2(topLeft, view / total * Size).Intersection(new Rect2(Vector2.Zero, Size));
-        if (rect.Size.X > 1 && rect.Size.Y > 1) DrawRect(rect, Colors.White, false, 1.5f);
+        var bounds = new Rect2(Vector2.Zero, Size);
+        for (int y = -1; y <= 1; y++)
+            for (int x = -1; x <= 1; x++)
+            {
+                var offset = map.PeriodOffset(x, y) / total * Size;
+                var rect = new Rect2(topLeft + offset, view / total * Size).Intersection(bounds);
+                if (rect.Size.X > 1 && rect.Size.Y > 1) DrawRect(rect, Colors.White, false, 1.5f);
+            }
     }
 
     public override void _GuiInput(InputEvent e)

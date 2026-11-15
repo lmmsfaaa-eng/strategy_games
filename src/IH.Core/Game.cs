@@ -193,7 +193,9 @@ public sealed partial class Game
         if (!HasUnitSpace(u.Owner, to)) throw new InvalidOperationException("На клетке нет места для этого юнита");
         _at[u.Tile]?.Remove(u);
         u.Tile = to;
-        (_at[to] ??= new List<Unit>()).Add(u);
+        var stack = _at[to] ??= new List<Unit>();
+        int index = stack.FindIndex(other => other.Id > u.Id);
+        stack.Insert(index < 0 ? stack.Count : index, u);
     }
 
     private void Emit(EventKind kind, int a = 0, int b = 0, int c = 0, int d = 0, string s = "", int[]? tiles = null, int only = -1)
@@ -215,17 +217,18 @@ public sealed partial class Game
         switch (kind)
         {
             case CmdType.MoveUnit: return CmdMove(p, c.A, c.B);
+            case CmdType.AutoExplore: return CmdAutoExplore(p, c.A);
             case CmdType.FoundCity: return CmdFound(p, c.A, c.S);
             case CmdType.Work: return CmdWork(p, c.A, (WorkKind)c.B);
             case CmdType.Fortify:
             {
                 var u = Own(p, c.A, out var err); if (u == null) return err;
-                u.Fortified = true; u.Goto = -1; return null;
+                u.Fortified = true; ClearTravelOrder(u); return null;
             }
             case CmdType.Wake:
             {
                 var u = Own(p, c.A, out var err); if (u == null) return err;
-                u.Fortified = false; u.Goto = -1; u.Work = WorkKind.None; u.WorkTurns = 0; return null;
+                u.Fortified = false; ClearTravelOrder(u); u.Work = WorkKind.None; u.WorkTurns = 0; return null;
             }
             case CmdType.Disband:
             {
@@ -237,9 +240,7 @@ public sealed partial class Game
             case CmdType.BuyTile: return CmdBuyTile(p, c.A, c.B);
             case CmdType.Gift: return CmdGift(p, c.A, c.B, c.C);
             case CmdType.Vote: return CmdVote(p, c.A, c.B);
-            case CmdType.SetCivic:
-                if (!Rules.AvailableCivics(p.Civics, p.CivicLevel).Any(x => x.Id == c.S)) return "Этот институт сейчас недоступен";
-                p.Civic = c.S; return null;
+            case CmdType.SetCivic: return SetCivic(p, (ProgressionOrder)c.A, c.S);
             case CmdType.SetNode:
             {
                 var node = Rules.Node(c.S);
@@ -269,12 +270,7 @@ public sealed partial class Game
                 city.Queue.RemoveAt(c.B); return null;
             }
             case CmdType.Buy: return CmdBuy(p, c.A);
-            case CmdType.SetResearch:
-            {
-                var avail = Rules.AvailableTechs(p.Known, p.Future);
-                if (!avail.Any(t => t.Id == c.S)) return "Эта технология сейчас недоступна";
-                p.Research = c.S; return null;
-            }
+            case CmdType.SetResearch: return SetResearch(p, (ProgressionOrder)c.A, c.S);
             case CmdType.SetSlider:
                 if (c.A < 0 || c.A > 100) return "Недопустимое значение";
                 p.Slider = c.A / 10 * 10; return null;
@@ -323,12 +319,11 @@ public sealed partial class Game
             if (c < 0 || !CanEnter(u, to)) return -1;
             var units = At(to);
             if (to != u.Tile && units.Count >= Rules.MaxUnitsPerTile && units[0].Owner == u.Owner) return -1;
-            if (to != target)
-            {
-                var city = CityAt(to);
-                if (city != null && city.Owner != u.Owner) return -1;
-                for (int i = 0; i < units.Count; i++) if (units[i].Owner != u.Owner) return -1;
-            }
+            bool CanEngage(int owner) => to == target && IsMilitary(u) && AtWar(u.Owner, owner);
+            var city = CityAt(to);
+            if (city != null && city.Owner != u.Owner && !CanEngage(city.Owner)) return -1;
+            for (int i = 0; i < units.Count; i++)
+                if (units[i].Owner != u.Owner && !CanEngage(units[i].Owner)) return -1;
             return c;
         });
     }
@@ -337,31 +332,63 @@ public sealed partial class Game
     {
         var u = Own(p, unitId, out var err); if (u == null) return err;
         if (!Grid.Valid(target)) return "Неверная клетка";
-        if (u.Tile == target) { u.Goto = -1; return null; }
-        // an order given with no movement left would silently run next turn and eat that turn's move
-        if (u.Moves <= 0) return "У юнита не осталось очков движения в этом ходу";
-        if (u.Def.X.Ranged > 0 && Grid.Distance(u.Tile, target) <= u.Def.X.Ranged)
+        if (u.Tile == target) { ClearTravelOrder(u); return null; }
+        if (u.Def.X.Ranged > 0 && (u.Moves > 0 || ObservesTile(u.Owner, target)) && RangedTargets(u, target) is { } foes)
         {
-            // a ranged unit ordered onto enemies within reach shoots instead of walking into them
-            var foes = At(target).Where(x => x.Owner != u.Owner && AtWar(u.Owner, x.Owner)).ToList();
-            if (foes.Count > 0) { RangedAttack(u, target, foes); return null; }
+            SetMoveOrder(u, target);
+            if (u.Moves > 0) RangedAttack(u, target, foes);
+            else u.QueuedRangedAttack = true;
+            return null;
         }
         if (At(target).Count >= Rules.MaxUnitsPerTile && At(target)[0].Owner == p.Id)
             return "На клетке уже три ваших юнита";
-        if (PathFor(u, target) == null) return "Туда нет пути";
-        u.Goto = target; u.Fortified = false; u.Work = WorkKind.None; u.WorkTurns = 0;
-        ContinueGoto(u);
+        var path = PathFor(u, target);
+        if (path == null) return "Туда нет пути";
+        SetMoveOrder(u, target);
+        ContinueGoto(u, path);
         return null;
     }
 
-    private void ContinueGoto(Unit u)
+    private static void ClearTravelOrder(Unit u)
     {
-        int guard = 0;
-        while (u.Goto >= 0 && u.Moves > 0 && S.Units.ContainsKey(u.Id) && guard++ < 64)
+        u.Goto = -1;
+        u.AutoExplore = false;
+        u.QueuedRangedAttack = false;
+    }
+
+    private static void SetMoveOrder(Unit u, int target)
+    {
+        ClearTravelOrder(u);
+        u.Goto = target; u.Fortified = false;
+        u.Work = WorkKind.None; u.WorkTurns = 0;
+    }
+
+    private List<Unit>? RangedTargets(Unit u, int target)
+    {
+        if (u.Def.X.Ranged <= 0 || Grid.Distance(u.Tile, target) > u.Def.X.Ranged) return null;
+        var foes = At(target).Where(x => x.Owner != u.Owner && AtWar(u.Owner, x.Owner)
+            && (!x.Def.X.Stealth || Spotted(x, u.Owner))).ToList();
+        return foes.Count > 0 ? foes : null;
+    }
+
+    private void ContinueGoto(Unit u, List<int>? path = null)
+    {
+        if (u.Goto < 0 || u.Moves <= 0) return;
+        if (u.QueuedRangedAttack)
         {
-            if (u.Tile == u.Goto) break;
-            var path = PathFor(u, u.Goto);
-            if (path == null || path.Count == 0 || !Step(u, path[0])) { u.Goto = -1; break; }
+            int target = u.Goto;
+            ClearTravelOrder(u);
+            if (ObservesTile(u.Owner, target) && RangedTargets(u, target) is { } foes)
+                RangedAttack(u, target, foes);
+            else Emit(EventKind.Info, s: $"{u.Def.Name}: цель обстрела больше недоступна.", only: u.Owner);
+            return;
+        }
+        path ??= PathFor(u, u.Goto);
+        if (path == null) { u.Goto = -1; return; }
+        foreach (int next in path)
+        {
+            if (u.Moves <= 0) break;
+            if (!Step(u, next)) { u.Goto = -1; break; }
         }
         if (u.Tile == u.Goto) u.Goto = -1;
     }
@@ -401,7 +428,7 @@ public sealed partial class Game
             if (civ.Def.Role == UnitRole.Worker || civ.Def.Role == UnitRole.Settler)
             {
                 civ.Owner = u.Owner; civ.Type = Rules.UnitIndex("worker");
-                civ.Moves = 0; civ.Goto = -1; civ.Work = WorkKind.None; civ.WorkTurns = 0;
+                civ.Moves = 0; ClearTravelOrder(civ); civ.Work = WorkKind.None; civ.WorkTurns = 0;
                 if (captureSlots > 0 && FitsTile(civ.Owner, civ.Type, civ.Tile)) captureSlots--;
                 else
                 {
@@ -595,7 +622,7 @@ public sealed partial class Game
         var tech = Rules.WorkTech(kind);
         if (!p.Has(tech)) return $"Нужна технология: {Rules.Tech(tech)?.Name}";
         if (t.Owner != p.Id && !(kind == WorkKind.Road && t.Owner < 0)) return "Улучшать можно только свою территорию";
-        u.Work = kind; u.WorkTurns = Rules.WorkTurns(kind); u.Moves = 0; u.Goto = -1; u.Fortified = false;
+        u.Work = kind; u.WorkTurns = Rules.WorkTurns(kind); u.Moves = 0; ClearTravelOrder(u); u.Fortified = false;
         return null;
     }
 
@@ -814,7 +841,7 @@ public sealed partial class Game
                 foreach (var u in stack)
                 {
                     Relocate(u, city.Tile);
-                    u.Moves = 0; u.Goto = -1; u.Fortified = false;
+                    u.Moves = 0; ClearTravelOrder(u); u.Fortified = false;
                     Emit(EventKind.UnitMoved, u.Id, from, city.Tile, tiles: new[] { from, city.Tile });
                 }
                 break;
@@ -824,7 +851,7 @@ public sealed partial class Game
         p.Faith -= a.CostFaith; p.Gold -= a.CostGold;
         if (branch != null) p.Power[branch.Id] = power - a.CostPower;
         p.Cooldowns[a.Id] = S.Turn + Math.Max(1, a.Cooldown);
-        if (caster != null && S.Units.ContainsKey(caster.Id)) { caster.Moves = 0; caster.Goto = -1; }
+        if (caster != null && S.Units.ContainsKey(caster.Id)) { caster.Moves = 0; ClearTravelOrder(caster); }
         Emit(EventKind.Info, s: $"{a.Name}: {a.Effect()}", only: p.Id);
         return null;
     }
@@ -917,7 +944,7 @@ public sealed partial class Game
         int price = Rules.UpgradePrice(u.Type, to);
         if (p.Gold < price) return $"Недостаточно золота (нужно {price})";
         p.Gold -= price;
-        u.Type = to; u.Moves = 0; u.Goto = -1;
+        u.Type = to; u.Moves = 0; ClearTravelOrder(u);
         return null;
     }
 

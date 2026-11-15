@@ -40,7 +40,7 @@ public sealed partial class Game
         foreach (var (unit, tile) in placements)
         {
             Relocate(unit, tile);
-            unit.Goto = -1; unit.Work = WorkKind.None; unit.WorkTurns = 0; unit.Fortified = false;
+            ClearTravelOrder(unit); unit.Work = WorkKind.None; unit.WorkTurns = 0; unit.Fortified = false;
         }
     }
 }

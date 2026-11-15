@@ -22,8 +22,7 @@ public sealed partial class Game
         {
             foreach (var u in UnitsOf(p.Id))
             {
-                int sight = u.Def.Sight + (S.Tiles[u.Tile].Relief == Relief.Hills ? 1 : 0);
-                foreach (int t in Grid.Range(u.Tile, sight)) vis[t] = true;
+                foreach (int t in VisibleFrom(u)) vis[t] = true;
             }
             for (int i = 0; i < S.Tiles.Length; i++)
             {
@@ -36,18 +35,32 @@ public sealed partial class Game
         for (int i = 0; i < vis.Length; i++)
         {
             if (!vis[i]) { p.KnownTiles[i] &= ~TileData.VisibleBit; continue; }
-            var t = S.Tiles[i];
-            p.KnownTiles[i] = Seen(p, t).Pack() | TileData.ExploredBit | TileData.VisibleBit;
-            if (t.Owner >= 0 && t.Owner != p.Id) Meet(p.Id, t.Owner);
-            if (t.CityId >= 0)
-            {
-                var c = S.Cities[t.CityId];
-                p.KnownCities[c.Id] = c.Owner == p.Id ? CityOwnDto(c) : CityPublicDto(c);
-            }
-            var here = At(i);
-            for (int k = 0; k < here.Count; k++) if (here[k].Owner != p.Id) Meet(p.Id, here[k].Owner);
+            RememberVisibleTile(p, i);
         }
         return vis;
+    }
+
+    private int SightRadius(Unit u) => u.Def.Sight + (S.Tiles[u.Tile].Relief == Relief.Hills ? 1 : 0);
+
+    private List<int> VisibleFrom(Unit u) => Grid.Range(u.Tile, SightRadius(u));
+
+    private bool ObservesTile(int owner, int tile)
+        => _sandboxReveal.Contains(owner) || S.Tiles[tile].Owner == owner
+            || Grid.Nb[tile].Any(n => S.Tiles[n].Owner == owner)
+            || UnitsOf(owner).Any(observer => Grid.Distance(observer.Tile, tile) <= SightRadius(observer));
+
+    private void RememberVisibleTile(Player p, int idx)
+    {
+        var t = S.Tiles[idx];
+        p.KnownTiles[idx] = Seen(p, t).Pack() | TileData.ExploredBit | TileData.VisibleBit;
+        if (t.Owner >= 0 && t.Owner != p.Id) Meet(p.Id, t.Owner);
+        if (t.CityId >= 0)
+        {
+            var c = S.Cities[t.CityId];
+            p.KnownCities[c.Id] = c.Owner == p.Id ? CityOwnDto(c) : CityPublicDto(c);
+        }
+        var here = At(idx);
+        for (int k = 0; k < here.Count; k++) if (here[k].Owner != p.Id) Meet(p.Id, here[k].Owner);
     }
 
     private void Meet(int a, int b)
@@ -85,6 +98,7 @@ public sealed partial class Game
         Expires = u.Expires > 0 ? Math.Max(1, u.Expires - S.Turn) : 0, Shield = u.ShieldUntil > S.Turn ? u.ShieldPct : 0,
         Id = u.Id, Owner = u.Owner, Type = u.Type, Tile = u.Tile, Hp = u.Hp, Moves = own ? u.Moves : 0,
         WorkTurns = own ? u.WorkTurns : 0, Goto = own ? u.Goto : -1, Work = (byte)u.Work, Fortified = u.Fortified,
+        AutoExplore = own && u.AutoExplore,
     };
 
     private bool Spotted(Unit hidden, int viewer)
@@ -151,6 +165,7 @@ public sealed partial class Game
             BuildingUpkeep = (int)Math.Round(p.BuildingUpkeep), CityMaint = (int)Math.Round(p.CityMaint),
             RoadUpkeep = (int)Math.Round(p.RoadUpkeep), StrainCost = (int)Math.Round(p.StrainCost),
             Research = p.Research ?? "", Known = p.Known.OrderBy(x => x).ToArray(), Future = (int[])p.Future.Clone(),
+            ResearchPlan = ResearchPlan(p), CivicPlan = CivicPlan(p),
             Itr = (float)p.Itr, Pressure = (float)p.Pressure, Lag = (float)p.Lag, SciMult = (float)p.SciMult,
             CulMult = (float)p.CulMult, UpkeepMult = (float)p.UpkeepMult, Sprawl = (float)p.Sprawl,
             Available = Rules.AvailableTechs(p.Known, p.Future)

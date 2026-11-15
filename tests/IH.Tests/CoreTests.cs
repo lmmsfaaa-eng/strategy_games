@@ -72,11 +72,11 @@ public class SharedTests
     public void Pathfinding_prefers_cheap_tiles_and_respects_walls()
     {
         var g = new HexGrid(10, 3);
-        var path = g.FindPath(10, 19, (_, to) => g.Y(to) == 1 && g.X(to) == 5 ? -1 : 2);
+        var path = g.FindPath(11, 18, (_, to) => g.X(to) == 9 || g.Y(to) == 1 && g.X(to) == 5 ? -1 : 2);
         Assert.NotNull(path);
         Assert.DoesNotContain(15, path!);
-        Assert.Equal(19, path![^1]);
-        Assert.Null(g.FindPath(10, 19, (_, to) => g.X(to) == 5 ? -1 : 2));
+        Assert.Equal(18, path![^1]);
+        Assert.Null(g.FindPath(11, 18, (_, to) => g.X(to) is 5 or 9 ? -1 : 2));
     }
 
     [Fact]
@@ -160,7 +160,7 @@ public class GameTests
     }
 
     [Fact]
-    public void Move_order_without_movement_left_is_refused_not_queued()
+    public void Move_order_without_movement_left_is_queued_for_next_turn()
     {
         var g = New(2, 0);
         var warrior = g.UnitsOf(0).First(u => u.Def.Id == "warrior");
@@ -168,15 +168,22 @@ public class GameTests
         Assert.Null(Cmd(g, 0, CmdType.MoveUnit, warrior.Id, step));
         Assert.Equal(0, warrior.Moves);
         int next = g.Grid.Nb[warrior.Tile].First(t => g.S.Tiles[t].Passable);
-        Assert.NotNull(Cmd(g, 0, CmdType.MoveUnit, warrior.Id, next));      // spent: nothing is queued for next turn
-        Assert.Equal(-1, warrior.Goto);
+        Assert.Null(Cmd(g, 0, CmdType.MoveUnit, warrior.Id, next));
+        Assert.Equal(step, warrior.Tile);
+        Assert.Equal(next, warrior.Goto);
         Cmd(g, 0, CmdType.EndTurn); Cmd(g, 1, CmdType.EndTurn);
-        Assert.Equal(step, warrior.Tile);                                    // the unit did not move by itself
-        Assert.Equal(warrior.MaxMoves, warrior.Moves);
-        // a long route started with movement left still continues over several turns
+        Assert.Equal(next, warrior.Tile);
+        Assert.Equal(0, warrior.Moves);
+        // An exhausted unit follows a queued long route over several turns.
         int far = Enumerable.Range(0, g.Grid.Count).First(t => g.Grid.Distance(t, warrior.Tile) == 3 && g.PathFor(warrior, t) != null);
         Assert.Null(Cmd(g, 0, CmdType.MoveUnit, warrior.Id, far));
         Assert.Equal(far, warrior.Goto);
+        for (int turn = 0; turn < 8 && warrior.Tile != far; turn++)
+        {
+            Cmd(g, 0, CmdType.EndTurn);
+            Cmd(g, 1, CmdType.EndTurn);
+        }
+        Assert.Equal(far, warrior.Tile);
     }
 
     [Fact]

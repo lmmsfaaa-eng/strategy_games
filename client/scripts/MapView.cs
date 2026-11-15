@@ -38,6 +38,7 @@ public partial class MapView : Node3D
     private readonly Godot.Environment _environment;
     private readonly bool _forwardPlus;
     private readonly Chunk[] _chunks;
+    private Vector2 _viewMin, _viewMax;
     private readonly int _chunkCols;
     private readonly HashSet<int> _dirtyChunks = new();
     private readonly Dictionary<int, UnitNode> _units = new();
@@ -57,6 +58,7 @@ public partial class MapView : Node3D
     public int Lod = 2;
     public int SelectedUnit = -1, HoverTile = -1;
     public List<int>? HoverPath;
+    public int HoverTurns { get; private set; }
     public int[] Highlight = Array.Empty<int>();
     public int UnitProjectionRevision { get; private set; }
     private bool _dirty = true, _layoutDirty, _dragging, _pressed;
@@ -64,7 +66,8 @@ public partial class MapView : Node3D
 
     private sealed class Chunk
     {
-        public MeshInstance3D Terrain = null!, Decor = null!;
+        public Mesh? Terrain, Decor;
+        public readonly List<(MeshInstance3D Terrain, MeshInstance3D Decor)> Images = new();
         public int X0, Y0;
     }
 
@@ -78,6 +81,7 @@ public partial class MapView : Node3D
         public int Type = -1, Owner = -1;
         public Vector3 Pos;
         public readonly Queue<Vector3> Path = new();
+        public readonly List<Node3D> Copies = new();
         public int Tile, Predicted = -1;
         public double Deadline;
     }
@@ -87,6 +91,7 @@ public partial class MapView : Node3D
         public Node3D Root = null!;
         public MeshInstance3D Body = null!;
         public string Look = "";
+        public readonly List<Node3D> Copies = new();
     }
 
     public MapView(GameScreen screen, ClientWorld world)
@@ -98,12 +103,7 @@ public partial class MapView : Node3D
         for (int cy = 0; cy < rows; cy++)
             for (int cx = 0; cx < _chunkCols; cx++)
             {
-                var c = new Chunk { X0 = cx * ChunkSize, Y0 = cy * ChunkSize };
-                c.Terrain = new MeshInstance3D { MaterialOverride = _terrainMat };
-                // level of detail: trees, resources and improvements disappear when the camera is far away
-                c.Decor = new MeshInstance3D { MaterialOverride = _terrainMat, VisibilityRangeEnd = 51f, VisibilityRangeEndMargin = 7f };
-                AddChild(c.Terrain); AddChild(c.Decor);
-                _chunks[cy * _chunkCols + cx] = c;
+                _chunks[cy * _chunkCols + cx] = new Chunk { X0 = cx * ChunkSize, Y0 = cy * ChunkSize };
             }
 
         AddChild(_camera);
@@ -151,29 +151,60 @@ public partial class MapView : Node3D
         return t.Relief switch { Relief.Hills => 0.34f, Relief.Mountain => 0.42f, _ => 0.12f };
     }
 
-    public Vector3 Center(int idx)
+    private Vector3 CanonicalCenter(int idx)
     {
         var g = Ground(idx);
         return new Vector3(g.X, Height(W.Tiles[idx]), g.Y);
+    }
+
+    /// <summary>The map image nearest the camera, or nearest a route point when drawing a contiguous path.</summary>
+    public Vector3 Center(int idx)
+    {
+        var focus = (_viewMin + _viewMax) * 0.5f;
+        return NearestCenter(idx, new Vector3(focus.X, 0, focus.Y));
+    }
+
+    public Vector3 NearestCenter(int idx, Vector3 reference) => NearestImage(CanonicalCenter(idx), reference);
+
+    private Vector3 NearestImage(Vector3 point, Vector3 reference)
+    {
+        var period = MapPixelSize;
+        int row = Mathf.RoundToInt((reference.Z - point.Z) / period.Y);
+        Vector3 best = point;
+        float bestDistance = float.MaxValue;
+        for (int y = row - 1; y <= row + 1; y++)
+        {
+            int x = Mathf.RoundToInt((reference.X - point.X - y * SeamShear) / period.X);
+            Vector2 offset = PeriodOffset(x, y);
+            var image = point + new Vector3(offset.X, 0, offset.Y);
+            float distance = reference.DistanceSquaredTo(image);
+            if (distance < bestDistance) { bestDistance = distance; best = image; }
+        }
+        return best;
     }
 
     private int Neighbor(int idx, int dir)
     {
         int x = idx % W.Grid.W, y = idx / W.Grid.W;
         var (dx, dy) = (y & 1) == 0 ? EvenRow[dir] : OddRow[dir];
-        int nx = x + dx, ny = y + dy;
-        return nx < 0 || ny < 0 || nx >= W.Grid.W || ny >= W.Grid.H ? -1 : ny * W.Grid.W + nx;
+        return W.Grid.WrapIndex(x + dx, y + dy);
     }
 
     private int TileAtGround(Vector2 p)
     {
-        int row = Mathf.Clamp(Mathf.RoundToInt(p.Y / RowH), 0, W.Grid.H - 1);
-        int col = Mathf.Clamp(Mathf.RoundToInt(p.X / HexW - 0.5f * (row & 1)), 0, W.Grid.W - 1);
-        int best = row * W.Grid.W + col;
-        float bestD = Ground(best).DistanceSquaredTo(p);
+        int row = Mathf.RoundToInt(p.Y / RowH);
+        int col = Mathf.RoundToInt(p.X / HexW - 0.5f * (row & 1));
+        int best = W.Grid.WrapIndex(col, row);
+        var reference = new Vector3(p.X, 0, p.Y);
+        float DistanceToImage(int tile)
+        {
+            var image = NearestCenter(tile, reference);
+            return new Vector2(image.X, image.Z).DistanceSquaredTo(p);
+        }
+        float bestD = DistanceToImage(best);
         foreach (int n in W.Grid.Nb[best])
         {
-            float d = Ground(n).DistanceSquaredTo(p);
+            float d = DistanceToImage(n);
             if (d < bestD) { bestD = d; best = n; }
         }
         return bestD <= R * R ? best : -1;
@@ -199,7 +230,9 @@ public partial class MapView : Node3D
         return tile;
     }
 
-    public Vector2 MapPixelSize => new(HexW * (W.Grid.W + 0.5f), RowH * W.Grid.H);
+    public Vector2 MapPixelSize => new(HexW * W.Grid.W, RowH * W.Grid.H);
+    private float SeamShear => (W.Grid.H & 1) * HexW * 0.5f;
+    public Vector2 PeriodOffset(int x, int y) => new(x * MapPixelSize.X + y * SeamShear, y * MapPixelSize.Y);
     private float Distance => BaseDistance / Zoom;
     /// <summary>Approximate size of the ground area in view, for the minimap frame.</summary>
     public Vector2 ViewSize => new(Distance * 1.25f, Distance * 0.95f);
@@ -214,6 +247,35 @@ public partial class MapView : Node3D
         return !_camera.IsPositionBehind(p);
     }
 
+    internal bool ProjectHovered(float lift, out Vector2 screen)
+    {
+        var p = HoveredCenter() + Vector3.Up * lift;
+        screen = _camera.UnprojectPosition(p);
+        return !_camera.IsPositionBehind(p);
+    }
+
+    private Vector3 HoveredCenter()
+    {
+        var mouse = GetViewport().GetMousePosition();
+        var direction = _camera.ProjectRayNormal(mouse);
+        if (direction.Y > -0.01f) return Center(HoverTile);
+        var origin = _camera.ProjectRayOrigin(mouse);
+        var hit = origin + direction * ((Height(W.Tiles[HoverTile]) - origin.Y) / direction.Y);
+        return NearestCenter(HoverTile, hit);
+    }
+
+    internal IEnumerable<Vector2> ProjectTileImages(int tile, float lift)
+    {
+        var origin = CanonicalCenter(tile) + Vector3.Up * lift;
+        var ground = new Vector2(origin.X, origin.Z);
+        foreach (var repeat in VisiblePeriods(ground - Vector2.One, ground + Vector2.One))
+        {
+            var offset = PeriodOffset(repeat.X, repeat.Y);
+            var world = origin + new Vector3(offset.X, 0, offset.Y);
+            if (!_camera.IsPositionBehind(world)) yield return _camera.UnprojectPosition(world);
+        }
+    }
+
     public bool ProjectUnit(int unitId, out Vector2 screen, out bool moving)
     {
         screen = Vector2.Zero;
@@ -224,6 +286,22 @@ public partial class MapView : Node3D
         screen = _camera.UnprojectPosition(point);
         moving = n.Path.Count != 0 || n.Predicted >= 0;
         return true;
+    }
+
+    internal IEnumerable<(Vector2I Copy, Vector2 Screen, bool Moving)> ProjectUnitImages(UnitDto unit)
+    {
+        if (!_units.TryGetValue(unit.Id, out var n)) yield break;
+        var ground = Ground(unit.Tile);
+        bool moving = n.Path.Count > 0 || n.Predicted >= 0;
+        foreach (var instance in n.Copies.Prepend(n.Root))
+        {
+            if (!instance.Visible) continue;
+            var p = instance.Position + Vector3.Up * (n.BodyTop + 0.02f);
+            if (_camera.IsPositionBehind(p)) continue;
+            int y = Mathf.RoundToInt((p.Z - ground.Y) / MapPixelSize.Y);
+            int x = Mathf.RoundToInt((p.X - ground.X - y * SeamShear) / MapPixelSize.X);
+            yield return (new Vector2I(x, y), _camera.UnprojectPosition(p), moving);
+        }
     }
 
     public void CenterOn(int tile) { Cam = Ground(tile); ApplyCamera(); }
@@ -248,12 +326,16 @@ public partial class MapView : Node3D
     public void ApplyCamera()
     {
         Zoom = Mathf.Clamp(Zoom, 0.14f, 2.4f);
-        Cam = new Vector2(Mathf.Clamp(Cam.X, 0, MapPixelSize.X), Mathf.Clamp(Cam.Y, 0, MapPixelSize.Y));
+        var period = MapPixelSize;
+        int yPeriods = Mathf.FloorToInt(Cam.Y / period.Y);
+        Cam = new Vector2(Mathf.PosMod(Cam.X - yPeriods * SeamShear, period.X), Mathf.PosMod(Cam.Y, period.Y));
         var focus = new Vector3(Cam.X, 0, Cam.Y);
         float d = Distance;
         var offset = new Vector3(Mathf.Sin(Yaw) * Mathf.Cos(Pitch), Mathf.Sin(Pitch), Mathf.Cos(Yaw) * Mathf.Cos(Pitch)) * d;
         _camera.Position = focus + offset;
         _camera.LookAt(focus, Vector3.Up);
+        UpdateViewBounds();
+        foreach (var chunk in _chunks) LayoutChunk(chunk);
         if (_forwardPlus)
         {
             // Below this zoom the contact details are subpixel; relying on baked shading avoids stippled AO.
@@ -264,6 +346,108 @@ public partial class MapView : Node3D
         Lod = lod;
         _layoutDirty = true;
         _screen.Minimap?.QueueRedraw();
+    }
+
+    public override void _Ready()
+    {
+        var viewport = GetViewport();
+        viewport.SizeChanged += ApplyCamera;
+        TreeExiting += () => viewport.SizeChanged -= ApplyCamera;
+    }
+
+    private void UpdateViewBounds()
+    {
+        Vector2 size = GetViewport().GetVisibleRect().Size;
+        _viewMin = Cam;
+        _viewMax = Cam;
+        for (int corner = 0; corner < 4; corner++)
+        {
+            var screen = new Vector2((corner & 1) == 0 ? 0 : size.X, (corner & 2) == 0 ? 0 : size.Y);
+            var origin = _camera.ProjectRayOrigin(screen);
+            var direction = _camera.ProjectRayNormal(screen);
+            // Project to the terrain base and the highest ground feature. Rotating the camera
+            // changes which repeat intersects this footprint.
+            var basePoint = origin + direction * ((BaseY - origin.Y) / direction.Y);
+            var highPoint = origin + direction * ((2.2f - origin.Y) / direction.Y);
+            _viewMin = _viewMin.Min(new Vector2(basePoint.X, basePoint.Z)).Min(new Vector2(highPoint.X, highPoint.Z));
+            _viewMax = _viewMax.Max(new Vector2(basePoint.X, basePoint.Z)).Max(new Vector2(highPoint.X, highPoint.Z));
+        }
+    }
+
+    private void LayoutChunk(Chunk chunk)
+    {
+        int used = 0;
+        if (chunk.Terrain != null || chunk.Decor != null)
+        {
+            var lower = new Vector2(chunk.X0 * HexW, chunk.Y0 * RowH) - Vector2.One * 2;
+            var upper = new Vector2(Math.Min(chunk.X0 + ChunkSize, W.Grid.W) * HexW,
+                Math.Min(chunk.Y0 + ChunkSize, W.Grid.H) * RowH) + Vector2.One * 2;
+            foreach (var repeat in VisiblePeriods(lower, upper))
+            {
+                if (used == chunk.Images.Count)
+                {
+                    // Each visible image reuses the canonical meshes instead of rebuilding their vertices.
+                    var terrain = new MeshInstance3D { MaterialOverride = _terrainMat };
+                    var decor = new MeshInstance3D { MaterialOverride = _terrainMat, VisibilityRangeEnd = 51f, VisibilityRangeEndMargin = 7f };
+                    AddChild(terrain);
+                    AddChild(decor);
+                    chunk.Images.Add((terrain, decor));
+                }
+                var image = chunk.Images[used++];
+                var offset = PeriodOffset(repeat.X, repeat.Y);
+                image.Terrain.Position = image.Decor.Position = new Vector3(offset.X, 0, offset.Y);
+                image.Terrain.Mesh = chunk.Terrain;
+                image.Decor.Mesh = chunk.Decor;
+                image.Terrain.Show();
+                image.Decor.Show();
+            }
+        }
+        for (int i = used; i < chunk.Images.Count; i++)
+        {
+            chunk.Images[i].Terrain.Hide();
+            chunk.Images[i].Decor.Hide();
+        }
+    }
+
+    private IEnumerable<Vector2I> VisiblePeriods(Vector2 lower, Vector2 upper)
+    {
+        var period = MapPixelSize;
+        int firstRow = Mathf.CeilToInt((_viewMin.Y - upper.Y) / period.Y);
+        int lastRow = Mathf.FloorToInt((_viewMax.Y - lower.Y) / period.Y);
+        for (int y = firstRow; y <= lastRow; y++)
+        {
+            int firstCol = Mathf.CeilToInt((_viewMin.X - upper.X - y * SeamShear) / period.X);
+            int lastCol = Mathf.FloorToInt((_viewMax.X - lower.X - y * SeamShear) / period.X);
+            for (int x = firstCol; x <= lastCol; x++)
+                yield return new Vector2I(x, y);
+        }
+    }
+
+    private void LayoutEntity(Node3D root, MeshInstance3D body, MeshInstance3D? ring, List<Node3D> copies)
+    {
+        int used = 0;
+        var ground = new Vector2(root.Position.X, root.Position.Z);
+        foreach (var repeat in VisiblePeriods(ground - Vector2.One, ground + Vector2.One))
+        {
+            if (repeat == Vector2I.Zero) continue;
+            if (used == copies.Count)
+            {
+                var clone = new Node3D();
+                clone.AddChild(new MeshInstance3D { MaterialOverride = _terrainMat });
+                if (ring != null) clone.AddChild((MeshInstance3D)ring.Duplicate());
+                AddChild(clone);
+                copies.Add(clone);
+            }
+            var copy = copies[used++];
+            var offset = PeriodOffset(repeat.X, repeat.Y);
+            copy.Position = root.Position + new Vector3(offset.X, 0, offset.Y);
+            var copyBody = copy.GetChild<MeshInstance3D>(0);
+            copyBody.Mesh = body.Mesh;
+            copyBody.Transform = body.Transform;
+            if (ring != null) copy.GetChild<MeshInstance3D>(1).Visible = ring.Visible;
+            copy.Show();
+        }
+        for (int i = used; i < copies.Count; i++) copies[i].Hide();
     }
 
     // -------------------------------------------------------------- state
@@ -281,12 +465,13 @@ public partial class MapView : Node3D
             if (!_units.TryGetValue(u.Id, out var v)) { _units[u.Id] = CreateUnit(u); continue; }
             if (u.Tile == v.Tile) continue;
             v.Tile = u.Tile;
-            if (v.Predicted != u.Tile) { v.Path.Clear(); v.Path.Enqueue(Center(u.Tile)); }
+            if (v.Predicted != u.Tile) { v.Path.Clear(); v.Path.Enqueue(NearestCenter(u.Tile, v.Pos)); }
             v.Predicted = -1;
         }
         foreach (int id in _units.Keys.Where(id => !W.Units.ContainsKey(id)).ToList())
         {
             _units[id].Root.QueueFree();
+            foreach (var copy in _units[id].Copies) copy.QueueFree();
             _units.Remove(id);
         }
         if (SelectedUnit >= 0 && !W.Units.ContainsKey(SelectedUnit)) SelectedUnit = -1;
@@ -295,7 +480,7 @@ public partial class MapView : Node3D
                 _flashes.Add((e.B, Now + 0.8, e.S == "1" ? new Color(1, 0.45f, 0.15f) : new Color(0.8f, 0.85f, 1f)));
             else if (e.Type == EventKind.Ranged && W.Grid.Valid(e.B))
                 _flashes.Add((e.B, Now + 0.9, new Color(1f, 0.75f, 0.2f))); // shots, spells and tower fire
-        HoverPath = null;
+        UpdateHoverRoute();
         _dirty = true;
     }
 
@@ -306,7 +491,11 @@ public partial class MapView : Node3D
     /// <summary>Client-side prediction: start moving right away, the server confirms or corrects later.</summary>
     public void OrderMove(UnitDto u, int target)
     {
-        if (u.Tile == target) return;
+        if (u.Tile == target)
+        {
+            if (u.AutoExplore || u.Goto >= 0) _screen.Net.SendCommand(CmdType.MoveUnit, u.Id, target);
+            return;
+        }
         var path = W.PredictPath(u, target);
         if (path == null) { _screen.Toast("Туда нет известного пути", true); return; }
         int seq = _screen.Net.SendCommand(CmdType.MoveUnit, u.Id, target);
@@ -315,6 +504,7 @@ public partial class MapView : Node3D
         int moves = u.Moves, at = u.Tile, last = u.Tile;
         var mover = Rules.MoverFor(u.Def, W.Knows);
         v.Path.Clear();
+        var position = v.Pos;
         foreach (int step in path)
         {
             if (moves <= 0) break;
@@ -322,7 +512,8 @@ public partial class MapView : Node3D
                            || (W.CityAt(step) is { } c && c.Owner != W.MyId);
             if (hostile) break; // the outcome of a fight is for the server to decide
             moves -= Rules.MoveCost(W.Tiles[at], W.Tiles[step], mover);
-            v.Path.Enqueue(Center(step));
+            position = NearestCenter(step, position);
+            v.Path.Enqueue(position);
             at = last = step;
         }
         if (last != u.Tile)
@@ -343,7 +534,7 @@ public partial class MapView : Node3D
     {
         v.Predicted = -1;
         v.Path.Clear();
-        v.Path.Enqueue(Center(v.Tile));
+        v.Path.Enqueue(NearestCenter(v.Tile, v.Pos));
         _dirty = true;
     }
 
@@ -397,8 +588,8 @@ public partial class MapView : Node3D
             bool full = _dirty;
             _dirty = false;
             if (full || moving || _layoutDirty) SyncUnits();
+            if (full || _layoutDirty) SyncCities();
             _layoutDirty = false;
-            if (full) SyncCities();
             DrawLines();
             if (moving || _flashes.Count > 0) OS.LowProcessorUsageMode = false;
         }
@@ -448,15 +639,30 @@ public partial class MapView : Node3D
             int tile = TileAt(mm.Position);
             if (tile == HoverTile) return;
             HoverTile = tile;
-            HoverPath = null;
-            if (tile >= 0 && SelectedUnit >= 0 && W.Units.TryGetValue(SelectedUnit, out var u) && u.Owner == W.MyId)
-                HoverPath = W.PredictPath(u, tile);
+            UpdateHoverRoute();
             _screen.HoverChanged(tile);
             _dirty = true;
         }
     }
 
-    public void Select(int unitId) { SelectedUnit = unitId; HoverPath = null; _dirty = true; }
+    private void UpdateHoverRoute()
+    {
+        HoverPath = null;
+        HoverTurns = 0;
+        if (HoverTile < 0 || !W.Units.TryGetValue(SelectedUnit, out var unit) || unit.Owner != W.MyId ||
+            unit.Def.Moves <= 0 || unit.Tile == HoverTile) return;
+        if (unit.Def.X.Ranged > 0 && W.Grid.Distance(unit.Tile, HoverTile) <= unit.Def.X.Ranged &&
+            W.UnitsAt(HoverTile).Any(other => other.Owner != W.MyId &&
+                W.Players.TryGetValue(other.Owner, out var player) && (player.AtWar || player.Neutral)))
+        {
+            HoverTurns = unit.Moves > 0 ? 1 : 2;
+            return;
+        }
+        HoverPath = W.PredictPath(unit, HoverTile);
+        if (HoverPath != null) HoverTurns = W.PredictArrivalTurn(unit, HoverPath);
+    }
+
+    public void Select(int unitId) { SelectedUnit = unitId; UpdateHoverRoute(); _dirty = true; }
     public void Invalidate() => _dirty = true;
 
     // ------------------------------------------------------------- colors
@@ -494,7 +700,7 @@ public partial class MapView : Node3D
                 byte vis = W.Vis[idx];
                 if (vis == 0) continue;
                 var t = W.Tiles[idx];
-                var c = Center(idx);
+                var c = CanonicalCenter(idx);
                 Color Shade(Color col) => vis == 1 ? col.Lerp(Ui.Col(0x475659), 0.42f).Darkened(0.22f) : col;
                 var color = TerrainColor(t);
                 float variation = Mathf.Sin(x * 0.82f + y * 0.6f) * Mathf.Cos(y * 0.7f - x * 0.21f) * 0.065f;
@@ -596,8 +802,9 @@ public partial class MapView : Node3D
                     decor.Tint = null;
                 }
             }
-        ch.Terrain.Mesh = terrain.Commit();
-        ch.Decor.Mesh = decor.Commit();
+        ch.Terrain = terrain.Commit();
+        ch.Decor = decor.Commit();
+        LayoutChunk(ch);
     }
 
     // ------------------------------------------------------ units, cities
@@ -654,7 +861,9 @@ public partial class MapView : Node3D
                 Vector2 slot = FormationSlot(i, units.Length);
                 Vector2 horizontal = RightDir * slot.X + ForwardDir * slot.Y;
                 if (n.Path.Count == 0) n.Pos = Center(stack.Key);
-                n.Root.Position = n.Pos + new Vector3(horizontal.X, 0, horizontal.Y);
+                var focus = (_viewMin + _viewMax) * 0.5f;
+                n.Root.Position = NearestImage(n.Pos, new Vector3(focus.X, 0, focus.Y)) + new Vector3(horizontal.X, 0, horizontal.Y);
+                LayoutEntity(n.Root, n.Body, n.Ring, n.Copies);
             }
         }
     }
@@ -683,18 +892,25 @@ public partial class MapView : Node3D
                 AddChild(n.Root);
                 _cities[c.Id] = n;
             }
+            n.Root.Position = Center(c.Tile);
             int era = c.VisualEra;
             string look = $"{c.Owner}|{c.Pop}|{era}|{c.Capital}|{string.Join(',', c.Buildings)}";
-            if (n.Look == look) continue;
-            n.Look = look;
-            n.Body.Mesh = Town.City(c.Id, c.Pop, era, c.Capital, c.Buildings, OwnerColor(c.Owner));
+            if (n.Look != look)
+            {
+                n.Look = look;
+                n.Body.Mesh = Town.City(c.Id, c.Pop, era, c.Capital, c.Buildings, OwnerColor(c.Owner));
+            }
+            LayoutEntity(n.Root, n.Body, null, n.Copies);
         }
     }
 
     // --------------------------------------------- selection, route, FX
     private void HexOutline(int tile, float scale, Color color, float lift)
+        => HexOutline(Center(tile), scale, color, lift);
+
+    private void HexOutline(Vector3 center, float scale, Color color, float lift)
     {
-        var c = Center(tile) + new Vector3(0, lift, 0);
+        var c = center + new Vector3(0, lift, 0);
         for (int k = 0; k < 6; k++)
         {
             _lines.SurfaceSetColor(color); _lines.SurfaceAddVertex(c + Corner[k] * scale);
@@ -710,18 +926,20 @@ public partial class MapView : Node3D
 
         foreach (int t in Highlight)
             if (W.Grid.Valid(t)) { Begin(); HexOutline(t, 0.72f, new Color(1, 1, 1, 0.9f), 0.08f); HexOutline(t, 0.68f, new Color(1, 1, 1, 0.9f), 0.08f); }
-        if (HoverTile >= 0 && W.Vis[HoverTile] > 0) { Begin(); HexOutline(HoverTile, 0.98f, new Color(1, 1, 1, 0.55f), 0.06f); }
+        if (HoverTile >= 0 && W.Vis[HoverTile] > 0) { Begin(); HexOutline(HoveredCenter(), 0.98f, new Color(1, 1, 1, 0.55f), 0.06f); }
 
         if (SelectedUnit >= 0 && W.Units.TryGetValue(SelectedUnit, out var sel))
         {
-            if (HoverPath is { Count: > 0 })
+            if (!_screen.IsAiming && HoverPath is { Count: > 0 })
             {
                 Begin();
-                var prev = Center(sel.Tile) + new Vector3(0, 0.15f, 0);
+                var destination = HoveredCenter();
+                var prev = destination + Vector3.Up * 0.15f;
                 var col = new Color(1, 1, 1, 0.95f);
-                foreach (int step in HoverPath)
+                for (int i = HoverPath.Count - 2; i >= -1; i--)
                 {
-                    var next = Center(step) + new Vector3(0, 0.15f, 0);
+                    int step = i < 0 ? sel.Tile : HoverPath[i];
+                    var next = NearestCenter(step, prev) + Vector3.Up * 0.15f;
                     // three parallel lines read as one thick route
                     foreach (var off in new[] { Vector3.Zero, new Vector3(0.03f, 0, 0.03f), new Vector3(-0.03f, 0, -0.03f) })
                     {
@@ -730,7 +948,7 @@ public partial class MapView : Node3D
                     }
                     prev = next;
                 }
-                HexOutline(HoverPath[^1], 0.45f, col, 0.15f);
+                HexOutline(destination, 0.45f, col, 0.15f);
             }
             if (sel.Goto >= 0 && W.Grid.Valid(sel.Goto)) { Begin(); HexOutline(sel.Goto, 0.5f, Ui.Gold, 0.12f); HexOutline(sel.Goto, 0.4f, Ui.Gold, 0.12f); }
         }

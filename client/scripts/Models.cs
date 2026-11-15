@@ -106,7 +106,15 @@ public static class Models
     public static void Resource(MeshBuilder b, Resource r, Vector3 at, Color classColor)
     {
         var saved = b.Xf;
-        b.Xf = saved * new Transform3D(Basis.Identity.Scaled(Vector3.One * 1.45f), at);
+        float scale = r switch
+        {
+            IH.Shared.Resource.Crabs or IH.Shared.Resource.Fish or IH.Shared.Resource.Turtles => 0.70f,
+            IH.Shared.Resource.Sheep or IH.Shared.Resource.Cattle or IH.Shared.Resource.Deer or IH.Shared.Resource.Horses
+                or IH.Shared.Resource.Furs or IH.Shared.Resource.Ivory => 0.77f,
+            IH.Shared.Resource.Whales => 0.89f,
+            _ => 1.45f,
+        };
+        b.Xf = saved * new Transform3D(Basis.Identity.Scaled(Vector3.One * scale), at);
         // a thin rim in the class colour; the model itself carries the meaning
         b.Column(V(0, 0, 0), 0.25f, 0.02f, classColor.Darkened(0.1f), 8);
         b.Column(V(0, 0.02f, 0), 0.215f, 0.006f, classColor.Lerp(C(0x3A4030), 0.72f), 8);

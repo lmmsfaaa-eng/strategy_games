@@ -160,8 +160,6 @@ public static class MapGen
             // on island maps any landmass big enough for a couple of cities will do
             bool home = anyLand ? comp[i] != 0 && sizes[comp[i]] >= 14 : comp[i] == best;
             if (!home || tiles[i].Terrain is Terrain.Snow or Terrain.Desert || tiles[i].Forest) continue;
-            int x = grid.X(i), y = grid.Y(i);
-            if (x < 2 || y < 2 || x >= grid.W - 2 || y >= grid.H - 2) continue;
             int score = 0;
             foreach (int n in grid.Range(i, 2)) { var (f, p, c) = Rules.TileYield(tiles[n]); score += f * 2 + p + c; }
             cand.Add((i, score));

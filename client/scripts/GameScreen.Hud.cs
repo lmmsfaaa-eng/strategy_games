@@ -235,6 +235,7 @@ public partial class GameScreen
         var title = Ui.H(8, Ui.Lbl(def.Name, 17, null, true));
         if (state.Length > 0) title.AddChild(Ui.Pill(state, Ui.Gold, 11));
         if (u.Expires > 0) title.AddChild(Ui.Pill($"исчезнет через {u.Expires} х.", Ui.Power, 11));
+        if (u.AutoExplore) title.AddChild(Ui.Pill("Авторазведка", Ui.Science, 11));
         if (u.Shield > 0) title.AddChild(Ui.Pill($"щит +{u.Shield}%", Ui.Science, 11));
         var hpColor = u.Hp >= 67 ? Ui.Good : u.Hp >= 34 ? Ui.Gold : Ui.Bad;
         var hp = Ui.H(6, new Icon(Ico.Heart, hpColor, 13), new Bar(hpColor, 7, 150).Set(u.Hp / 100f), Ui.Lbl($"{u.Hp}", 12, Ui.Dim));
@@ -292,9 +293,17 @@ public partial class GameScreen
                 row.AddChild(Ui.Btn($"{Rules.WorkName(kind)} · {Rules.WorkTurns(kind)} х.", () => UnitCommand(CmdType.Work, (int)k),
                     wanted ? $"Подключит ресурс: {Rules.Res(tile.Resource).Name}" : null, 13, wanted ? "Primary" : null));
             }
-        if (u.Fortified || u.Work != 0 || u.Goto >= 0) row.AddChild(Ui.Btn("Отменить приказ", () => UnitCommand(CmdType.Wake), size: 13));
+        if (u.AutoExplore || u.Fortified || u.Work != 0 || u.Goto >= 0)
+            row.AddChild(Ui.Btn(u.AutoExplore ? "Остановить авторазведку" : "Отменить приказ", () => UnitCommand(CmdType.Wake), size: 13));
         else row.AddChild(Ui.Btn(def.Str > 0 ? "Укрепиться  F" : "Спать  F", () => UnitCommand(CmdType.Fortify),
             def.Str > 0 ? "+25% к обороне; юнит не просит приказов, пока его не разбудят" : "Юнит не просит приказов, пока его не разбудят", 13));
+        if (!u.AutoExplore && def.Moves > 0)
+        {
+            var explore = Ui.Btn("Авторазведка", () => UnitCommand(CmdType.AutoExplore),
+                "Юнит каждый ход движется к неизведанным клеткам и останавливается, заметив врага.", 13);
+            explore.Disabled = !W.MyTurn;
+            row.AddChild(explore);
+        }
         int upTo = Rules.UpgradeTarget(u.Type, W.Knows, HasRes);
         if (upTo >= 0 && W.Tiles[u.Tile].Owner == W.MyId)
         {
