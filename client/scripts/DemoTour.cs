@@ -28,8 +28,23 @@ public partial class DemoTour : Node
         GD.Print($"tour: saved {name}.png");
     }
 
-    /// <summary>Selects a unit with a real mouse click going through Godot's input pipeline.</summary>
-    private async Task ClickTest()
+    private void Click(Vector2 position)
+    {
+        var viewport = GetViewport();
+        // Keep map projections in viewport coordinates and keep physical mouse motion out of the synthetic click.
+        viewport.PushInput(new InputEventMouseMotion { Position = position, GlobalPosition = position }, inLocalCoords: true);
+        foreach (bool pressed in new[] { true, false })
+        {
+            viewport.PushInput(new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.Left, ButtonMask = pressed ? MouseButtonMask.Left : 0,
+                Pressed = pressed, Position = position, GlobalPosition = position,
+            }, inLocalCoords: true);
+        }
+    }
+
+    /// <summary>Selects units with mouse events going through Godot's input pipeline.</summary>
+    private async Task<bool> ClickTest()
     {
         var game = _main.Game!;
         var w = _main.Net.World!;
@@ -38,17 +53,13 @@ public partial class DemoTour : Node
         game.Map.Select(-1);
         await Wait(0.3);
         var pos = game.Map.ScreenPos(unit.Tile);
-        foreach (bool pressed in new[] { true, false })
-        {
-            Input.ParseInputEvent(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = pressed, Position = pos, GlobalPosition = pos });
-            await Wait(0.1);
-        }
+        Click(pos);
         bool ok = game.Map.SelectedUnit >= 0 && w.Units.TryGetValue(game.Map.SelectedUnit, out var sel) && sel.Tile == unit.Tile;
-        GD.Print(ok ? "tour: click-select OK" : $"tour: click-select FAILED (selected {game.Map.SelectedUnit})");
+        GD.Print(ok ? "tour: click-select OK" : $"tour: click-select FAILED (selected {game.Map.SelectedUnit}, expected tile {unit.Tile})");
 
         // Select a different member of the stack by clicking its marker without cycling the tile.
         var target = w.UnitsAt(unit.Tile).FirstOrDefault(u => u.Owner == w.MyId && u.Id != game.Map.SelectedUnit);
-        if (target == null) return;
+        if (target == null) return ok;
         Vector2? marker = null;
         for (int y = -96; marker == null && y <= 64; y += 6)
             for (int x = -96; marker == null && x <= 96; x += 6)
@@ -59,15 +70,13 @@ public partial class DemoTour : Node
         if (marker is not { } at)
         {
             GD.PushError("tour: unit marker not found");
-            return;
+            return false;
         }
-        foreach (bool pressed in new[] { true, false })
-        {
-            Input.ParseInputEvent(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = pressed, Position = at, GlobalPosition = at });
-            await Wait(0.1);
-        }
-        if (game.Map.SelectedUnit == target.Id) GD.Print("tour: badge click-select OK");
+        Click(at);
+        bool badgeSelected = game.Map.SelectedUnit == target.Id;
+        if (badgeSelected) GD.Print("tour: badge click-select OK");
         else GD.PushError("tour: badge click-select FAILED");
+        return ok && badgeSelected;
     }
 
     /// <summary>Casts "grow forest" the way a player does: pick the spell, then click a tile on the map.</summary>
@@ -88,12 +97,7 @@ public partial class DemoTour : Node
         await Wait(0.3);
         game.BeginAction(spell, shaman.Id);
         await Shot("03a_aiming");
-        var pos = game.Map.ScreenPos(target);
-        foreach (bool pressed in new[] { true, false })
-        {
-            Input.ParseInputEvent(new InputEventMouseButton { ButtonIndex = MouseButton.Left, Pressed = pressed, Position = pos, GlobalPosition = pos });
-            await Wait(0.1);
-        }
+        Click(game.Map.ScreenPos(target));
         await Wait(0.6);
         GD.Print(w.Tiles[target].Forest ? "tour: spell-cast OK" : "tour: spell-cast FAILED");
         await Shot("03b_after_spell");
@@ -155,7 +159,7 @@ public partial class DemoTour : Node
         if (net.World == null || _main.Game == null) { GD.PrintErr("tour: game did not start"); GetTree().Quit(1); return; }
         var w = net.World;
         await Shot("01_start");
-        await ClickTest();
+        bool clickPassed = await ClickTest();
 
         var settler = w.Units.Values.FirstOrDefault(u => u.Owner == w.MyId && u.Def.Role == UnitRole.Settler);
         if (settler != null) net.SendCommand(CmdType.FoundCity, settler.Id);
@@ -235,6 +239,6 @@ public partial class DemoTour : Node
         game.Map.Zoom = 0.5f; game.Map.ApplyCamera(); await Shot("09_lod_medium");
         game.Map.Zoom = 0.2f; game.Map.ApplyCamera(); await Shot("10_lod_far");
         GD.Print($"tour: done at turn {w.Turn}, ping {net.PingMs} ms");
-        GetTree().Quit();
+        GetTree().Quit(clickPassed ? 0 : 1);
     }
 }
