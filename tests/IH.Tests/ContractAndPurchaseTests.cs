@@ -6,6 +6,21 @@ namespace IH.Tests;
 public class ContractAndPurchaseTests
 {
     [Fact]
+    public void Ai_does_not_treat_unaffordable_recurring_gold_as_a_free_term()
+    {
+        var game = GameTests.New(1, 1);
+        var ai = game.P(1);
+        ai.Gold = 50;
+        var proposal = new Proposal
+        {
+            From = 0, To = ai.Id, Kind = ProposalKind.Trade,
+            Offered = new TradeSide { Gold = 1 },
+            Requested = new TradeSide { Clauses = new[] { new DealClause { Kind = (byte)DealKind.GoldPerTurn, Value = 100, Turns = 5 } } },
+        };
+        Assert.False(SimpleAI.Accepts(game, ai, proposal));
+    }
+
+    [Fact]
     public void Gold_purchase_places_a_unit_immediately_and_full_stack_costs_nothing()
     {
         var g = GameTests.New(1, 0);

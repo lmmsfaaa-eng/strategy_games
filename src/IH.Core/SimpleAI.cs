@@ -146,24 +146,39 @@ public static class SimpleAI
         var rel = g.Rel(pr.From, pr.To);
         if (pr.Kind == ProposalKind.Trade)
         {
-            int Value(TradeSide side, bool receiving)
+            long Value(TradeSide side, bool receiving)
             {
                 int luxury = side.Luxury != 0 && (!receiving || !ai.HasResource((Resource)side.Luxury)) ? 30 : 0;
                 int tech = Rules.Tech(side.Tech)?.Cost / 2 ?? 0;
-                return side.Gold + 3 * side.Favor + luxury + tech;
+                return side.Gold + 3 * side.Favor + luxury + tech + side.Clauses.Sum(clause =>
+                {
+                    int turns = clause.Turns == 0 ? 20 : clause.Turns;
+                    return (DealKind)clause.Kind switch
+                    {
+                        DealKind.GoldPerTurn => (long)clause.Value * turns,
+                        DealKind.Resource => (!receiving || !ai.HasResource((Resource)clause.Value)) ? 3L * turns : 0,
+                        DealKind.Passage or DealKind.Statistics => turns,
+                        _ => 0,
+                    };
+                });
             }
-            int cost = Value(pr.Requested, false);
-            int benefit = Value(pr.Offered, true);
-            return (pr.Requested.Gold == 0 || ai.Gold - pr.Requested.Gold + pr.Offered.Gold >= 20)
-                && benefit * (rel.Allied ? 110L : 100L) >= cost * 100L;
+            if ((pr.Offered.HasAlliance || pr.Requested.HasAlliance) && !CanAlly()) return false;
+            long cost = Value(pr.Requested, false);
+            long benefit = Value(pr.Offered, true);
+            long firstPayment = pr.Requested.Gold + pr.Requested.Clauses
+                .Where(c => c.Kind == (byte)DealKind.GoldPerTurn).Sum(c => (long)c.Value);
+            return (firstPayment == 0 || ai.Gold - firstPayment + pr.Offered.Gold >= 20)
+                && benefit * (g.Allied(pr.From, pr.To) ? 110L : 100L) >= cost * 100L;
         }
         if (pr.Kind == ProposalKind.Alliance)
-            return !rel.AtWar && (rel.OpenBorders || g.SameFaith(pr.From, pr.To))
-                && g.Power(pr.From) >= g.Power(ai.Id) * 0.5;
+            return CanAlly();
         if (g.SameFaith(pr.From, pr.To)) return true; // one faith: peace and open borders come easily
         if (pr.Kind == ProposalKind.Peace)
             return g.S.Turn - rel.SinceTurn >= 8 || g.Power(ai.Id) < g.Power(pr.From);
         return !rel.AtWar && (ai.Id * 31 + pr.From * 17 + g.S.Settings.Seed) % 4 != 0;
+
+        bool CanAlly() => !rel.AtWar && (rel.OpenBorders || g.SameFaith(pr.From, pr.To))
+            && g.Power(pr.From) >= g.Power(ai.Id) * 0.5;
     }
 
     private static void Diplomacy(Game g, Player p)
