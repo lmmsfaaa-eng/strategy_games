@@ -22,54 +22,63 @@ internal static class Program
 internal sealed class LauncherWindow : Form
 {
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(15) };
-    private readonly Channel[] _channels;
+    private const string GameTitle = "Infinite Horizons — Kuzua";
+    private readonly GameInstallation _game;
     private readonly string[] _args;
     private readonly Label _status = new() { Dock = DockStyle.Bottom, Height = 56, TextAlign = ContentAlignment.MiddleCenter };
     private readonly CheckedListBox _mods = new() { Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false };
-    private readonly ComboBox _profile = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
-    private readonly FlowLayoutPanel _choices = new() { Dock = DockStyle.Fill, FlowDirection = FlowDirection.TopDown, WrapContents = false, Padding = new Padding(24) };
+    private readonly TabControl _tabs = new() { Dock = DockStyle.Fill, Padding = new Point(14, 6) };
+    private readonly Button _play = new() { AutoSize = true, MinimumSize = new Size(230, 52), Anchor = AnchorStyles.None };
+    private Task<string?>? _startupVersionCheck;
     private bool _busy, _loadingMods;
 
     public LauncherWindow(string root, string[] args)
     {
         _args = args;
         string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        _channels = new[]
-        {
-            new Channel("Kyzua", root, "kyzua", "lmmsfaaa-eng/strategy_games", "IH_KYZUA_UPDATE_URL",
-                Path.Combine(appData, "InfiniteHorizonsKyzua", "mods")),
-            new Channel("kazakhpoxuy", root, "original", "kazakhpox/strategy_games", "IH_UPDATE_URL",
-                Path.Combine(appData, "Godot", "app_userdata", "Infinite Horizons", "mods")),
-        };
-        _channels[1].AdoptLegacyInstallation(Path.Combine(root, "game"));
-        Text = "Infinite Horizons";
+        _game = new GameInstallation(root, Path.Combine(appData, "InfiniteHorizonsKyzua", "mods"));
+        ShowVersion(_game.InstalledVersion);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(420, 300);
         ClientSize = new Size(460, 325);
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 11);
 
-        var tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 6) };
-        var play = new TabPage("Выбор версии");
-        foreach (var channel in _channels)
-        {
-            var button = new Button { Text = channel.Name, Width = 300, Height = 55, Margin = new Padding(0, 0, 0, 12) };
-            button.Click += async (_, _) => await Start(channel, tabs);
-            _choices.Controls.Add(button);
-        }
-        play.Controls.Add(_choices);
+        var play = new TabPage("Игра");
+        var playLayout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 1 };
+        playLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        playLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        playLayout.Controls.Add(_play, 0, 0);
+        _play.Click += async (_, _) => await StartGame();
+        play.Controls.Add(playLayout);
         var mods = new TabPage("Моды") { Padding = new Padding(12) };
         mods.Controls.Add(_mods);
-        mods.Controls.Add(_profile);
-        _profile.Items.AddRange(_channels.Select(c => c.Name).Cast<object>().ToArray());
-        _profile.SelectedIndexChanged += (_, _) => RefreshMods();
         _mods.ItemCheck += SaveModSelection;
-        _profile.SelectedIndex = 0;
-        tabs.TabPages.Add(play);
-        tabs.TabPages.Add(mods);
-        Controls.Add(tabs);
+        RefreshMods();
+        _tabs.TabPages.Add(play);
+        _tabs.TabPages.Add(mods);
+        Controls.Add(_tabs);
         Controls.Add(_status);
+        Shown += async (_, _) => await CheckOnOpen();
         FormClosing += (_, e) => e.Cancel = _busy;
+    }
+
+    private void ShowVersion(string? installed, string? available = null)
+    {
+        string version = installed ?? (available == null ? "версия не установлена" : $"доступна {available}");
+        Text = $"{GameTitle} · {version}";
+        _play.Text = installed == null ? "Установить и играть" : "Играть";
+    }
+
+    private async Task CheckOnOpen()
+    {
+        _startupVersionCheck = _game.Latest(Http);
+        string? latest = await _startupVersionCheck;
+        if (IsDisposed || _busy || latest == null) return;
+        string? installed = _game.InstalledVersion;
+        ShowVersion(installed, latest);
+        if (installed != null && latest != installed)
+            _status.Text = $"Доступно обновление {latest}";
     }
 
     private void RefreshMods()
@@ -77,10 +86,9 @@ internal sealed class LauncherWindow : Form
         _loadingMods = true;
         try
         {
-            var channel = _channels[_profile.SelectedIndex];
-            var enabled = channel.ReadSelection();
+            var enabled = _game.ReadSelection();
             _mods.Items.Clear();
-            foreach (var mod in channel.ListMods())
+            foreach (var mod in _game.ListMods())
                 _mods.Items.Add(mod, enabled.Contains(mod.File));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
@@ -96,7 +104,7 @@ internal sealed class LauncherWindow : Form
         var enabled = Enumerable.Range(0, _mods.Items.Count)
             .Where(i => i == e.Index ? e.NewValue == CheckState.Checked : _mods.GetItemChecked(i))
             .Select(i => ((ModRow)_mods.Items[i]).File).ToArray();
-        try { _channels[_profile.SelectedIndex].WriteSelection(enabled); _status.Text = ""; }
+        try { _game.WriteSelection(enabled); _status.Text = ""; }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             e.NewValue = e.CurrentValue;
@@ -104,25 +112,24 @@ internal sealed class LauncherWindow : Form
         }
     }
 
-    private async Task Start(Channel selected, Control controls)
+    private async Task StartGame()
     {
         if (_busy) return;
         _busy = true;
-        controls.Enabled = false;
-        _status.Text = "Проверяем обновления обеих версий…";
-        var other = _channels.Single(c => c != selected);
-        var otherVersion = other.Latest(Http);
+        _tabs.Enabled = false;
+        _status.Text = "Проверяем обновления…";
         try
         {
-            string? warning = await Update(selected, await selected.Latest(Http));
-            if (selected.InstalledVersion == null)
+            string? latest = await (_startupVersionCheck is { IsCompleted: false } pending ? pending : _game.Latest(Http));
+            string? warning = await Update(latest);
+            string? installed = _game.InstalledVersion;
+            ShowVersion(installed, latest);
+            if (installed == null)
             {
-                _status.Text = warning ?? $"{selected.Name}: версия недоступна. Проверьте интернет.";
+                _status.Text = warning ?? "Версия недоступна. Проверьте подключение к интернету.";
                 return;
             }
-            selected.Launch(_args);
-            if (other.InstalledVersion != null)
-                await Update(other, await otherVersion);
+            _game.Launch(_args);
             _busy = false;
             Close();
         }
@@ -133,22 +140,25 @@ internal sealed class LauncherWindow : Form
         finally
         {
             _busy = false;
-            if (!IsDisposed) controls.Enabled = true;
+            if (!IsDisposed) _tabs.Enabled = true;
         }
     }
 
-    private async Task<string?> Update(Channel channel, string? latest)
+    private async Task<string?> Update(string? latest)
     {
-        if (latest == null || latest == channel.InstalledVersion) return null;
+        if (latest == null || latest == _game.InstalledVersion) return null;
         try
         {
-            var progress = new Progress<string>(status => _status.Text = $"{channel.Name} · {latest}\n{status}");
-            await channel.Install(Http, latest, progress);
+            var progress = new Progress<string>(status =>
+            {
+                if (!IsDisposed && _busy) _status.Text = $"{latest}\n{status}";
+            });
+            await _game.Install(Http, latest, progress);
             return null;
         }
-        catch (Exception error) when (error is IOException or HttpRequestException or UnauthorizedAccessException or OperationCanceledException)
+        catch (Exception error) when (error is IOException or InvalidDataException or HttpRequestException or UnauthorizedAccessException or OperationCanceledException)
         {
-            string warning = $"{channel.Name}: не удалось обновить. {error.Message}";
+            string warning = $"Не удалось обновить игру. {error.Message}";
             _status.Text = warning;
             return warning;
         }
@@ -160,36 +170,40 @@ internal sealed record ModRow(string File, string Name)
     public override string ToString() => Name;
 }
 
-internal sealed class Channel
+internal sealed class GameInstallation
 {
     private const string Version = "version.txt", Archive = "InfiniteHorizons-win-x64.zip", Game = "InfiniteHorizons.exe";
-    private readonly string _root, _game, _mods, _url;
+    private const string Releases = "https://github.com/lmmsfaaa-eng/strategy_games/releases/";
+    private readonly string _root, _game, _mods;
+    private readonly string? _updateOverride;
     private string Selection => Path.Combine(_mods, "launcher-selection.json");
-    public string Name { get; }
-
-    public Channel(string name, string root, string id, string repository, string overrideVariable, string mods)
+    public GameInstallation(string root, string mods)
     {
-        Name = name;
-        _root = Path.Combine(root, "versions", id);
+        _root = Path.Combine(root, "versions", "kyzua");
         _game = Path.Combine(_root, "game");
         _mods = mods;
-        string? endpoint = Environment.GetEnvironmentVariable(overrideVariable);
-        _url = (endpoint ?? $"https://github.com/{repository}/releases/latest/download/").TrimEnd('/') + "/";
+        string? endpoint = Environment.GetEnvironmentVariable("IH_KYZUA_UPDATE_URL");
+        if (Uri.TryCreate(endpoint, UriKind.Absolute, out var url) && url.Scheme is "http" or "https")
+            _updateOverride = url.AbsoluteUri.TrimEnd('/') + "/";
     }
 
-    public string? InstalledVersion => File.Exists(Path.Combine(_game, Game)) &&
-        File.Exists(Path.Combine(_game, Version)) ? File.ReadAllText(Path.Combine(_game, Version)).Trim() : null;
-
-    public void AdoptLegacyInstallation(string legacy)
+    public string? InstalledVersion
     {
-        if (!Directory.Exists(legacy) || Directory.Exists(_game)) return;
-        try
+        get
         {
-            Directory.CreateDirectory(_root);
-            Directory.Move(legacy, _game);
+            string path = Path.Combine(_game, Version);
+            if (!File.Exists(Path.Combine(_game, Game)) || !File.Exists(path)) return null;
+            try { return ParseVersion(File.ReadAllText(path)); }
+            catch (IOException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
         }
-        catch (IOException) { /* the old installation remains usable by the old launcher */ }
-        catch (UnauthorizedAccessException) { }
+    }
+
+    private static string? ParseVersion(string contents)
+    {
+        string version = contents.Trim();
+        return version is { Length: > 0 and <= 100 } && version.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')
+            ? version : null;
     }
 
     public HashSet<string> ReadSelection()
@@ -226,8 +240,7 @@ internal sealed class Channel
         try
         {
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
-            string value = (await http.GetStringAsync(_url + Version, timeout.Token)).Trim();
-            return value is { Length: > 0 and <= 100 } && value.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_') ? value : null;
+            return ParseVersion(await http.GetStringAsync((_updateOverride ?? Releases + "latest/download/") + Version, timeout.Token));
         }
         catch (HttpRequestException) { return null; }
         catch (OperationCanceledException) { return null; }
@@ -241,7 +254,8 @@ internal sealed class Channel
         string download = staging + ".zip";
         try
         {
-            using (var response = await http.GetAsync(_url + Archive, HttpCompletionOption.ResponseHeadersRead))
+            string archiveUrl = (_updateOverride ?? Releases + $"download/{Uri.EscapeDataString(version)}/") + Archive;
+            using (var response = await http.GetAsync(archiveUrl, HttpCompletionOption.ResponseHeadersRead))
             {
                 response.EnsureSuccessStatusCode();
                 using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(15));

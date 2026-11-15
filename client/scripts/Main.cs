@@ -12,13 +12,23 @@ public partial class Main : Control
     private MenuScreen _menu = null!;
     private GameScreen? _game;
     public GameScreen? Game => _game;
+    public string BuildVersion { get; private set; } = "dev";
     private string _tokenKey = "";
     public bool InSandbox => _tokenKey == "sandbox:local" && LocalServer.Running && LocalServer.SandboxToken != null;
 
     public override void _Ready()
     {
         _cfg.Load(CfgPath);
-        GetTree().Root.Theme = Ui.BuildTheme(); // one look for every control, popup and tooltip
+        var window = GetTree().Root;
+        string versionFile = OS.GetExecutablePath().GetBaseDir().PathJoin("version.txt");
+        if (FileAccess.FileExists(versionFile))
+        {
+            string installedVersion = FileAccess.GetFileAsString(versionFile).Trim();
+            if (installedVersion.Length > 0) BuildVersion = installedVersion;
+        }
+        string gameName = ProjectSettings.GetSetting("application/config/name").AsString();
+        window.Title = $"{gameName} — {BuildVersion}";
+        window.Theme = Ui.BuildTheme(); // one look for every control, popup and tooltip
         MouseFilter = MouseFilterEnum.Ignore; // the root must not swallow clicks meant for the map
         _menu = new MenuScreen(this);
         AddChild(_menu);

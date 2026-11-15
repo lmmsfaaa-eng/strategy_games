@@ -54,8 +54,7 @@ public partial class MenuScreen : Control
         panel.AddChild(root);
 
         root.AddChild(Ui.Lbl("INFINITE HORIZONS", 30, Ui.Gold, true));
-        string version = OS.GetExecutablePath().GetBaseDir().PathJoin("version.txt");
-        if (FileAccess.FileExists(version)) root.AddChild(Ui.Lbl(FileAccess.GetFileAsString(version).Trim(), 12, Ui.Dim));
+        root.AddChild(Ui.Lbl(main.BuildVersion, 12, Ui.Dim));
         root.AddChild(new HSeparator());
 
         _name.Text = main.Setting("name", ""); _name.PlaceholderText = "Ваше имя"; _name.MaxLength = 20;
