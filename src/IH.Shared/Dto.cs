@@ -186,11 +186,13 @@ public sealed class CityDetail : IWire
 public sealed class CityDto : IWire
 {
     public int Id, Owner, Tile, Pop, Radius, Religion; public string Name = ""; public bool Capital, Disorder;
+    /// <summary>What stands in the city. Anyone who sees the city sees its skyline: walls, temples, factories.</summary>
+    public string[] Buildings = Array.Empty<string>();
     public CityDetail? Detail; // only for the owner
     public void Sync(Wire w)
     {
         w.I(ref Id); w.I(ref Owner); w.I(ref Tile); w.I(ref Pop); w.I(ref Radius); w.S(ref Name);
-        w.B(ref Capital); w.B(ref Disorder); w.I(ref Religion); w.O(ref Detail);
+        w.B(ref Capital); w.B(ref Disorder); w.I(ref Religion); w.SA(ref Buildings); w.O(ref Detail);
     }
 }
 

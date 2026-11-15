@@ -103,6 +103,21 @@ public partial class DemoTour : Node
             Models.Resource(b, all[i], new Vector3((i % 12 - 5.5f) * 0.8f, 0, (i / 12 - 1.5f) * 0.95f), MapView.ResourceColor(all[i]));
         root.AddChild(new MeshInstance3D { Mesh = b.Commit(), MaterialOverride = mat, Scale = Vector3.One * 1.5f });
         await Shot("12_resources");
+        foreach (var k in root.GetChildren().Skip(1)) k.QueueFree();
+        // cities: a village, a walled classical town, an industrial city and a future metropolis with everything built
+        var ids = Rules.Buildings.Select(x => x.Id).ToList();
+        var towns = new (int pop, int era, string[] built)[]
+        {
+            (2, 0, new[] { "palace" }), (7, 2, ids.Take(12).ToArray()), (14, 4, ids.Take(22).ToArray()), (24, 7, ids.ToArray()),
+        };
+        for (int i = 0; i < towns.Length; i++)
+            root.AddChild(new MeshInstance3D { Mesh = Town.City(i + 1, towns[i].pop, towns[i].era, i == 0, towns[i].built, game.Map.OwnerColor(w.MyId)), MaterialOverride = mat, Position = new Vector3((i - 1.5f) * 2.3f, 0, 0), Scale = Vector3.One * 1.15f });
+        var imp = new MeshBuilder();
+        var kinds = System.Enum.GetValues<Improvement>().Where(k => k != Improvement.None).ToArray();
+        for (int i = 0; i < kinds.Length; i++) Town.Improvement(imp, kinds[i], new Vector3((i - (kinds.Length - 1) / 2f) * 0.95f, 0, 1.9f), false);
+        root.AddChild(new MeshInstance3D { Mesh = imp.Commit(), MaterialOverride = mat, Scale = Vector3.One * 1.15f });
+        game.Map.Zoom = 2.1f; game.Map.ApplyCamera();
+        await Shot("13_cities");
         root.QueueFree();
         foreach (var c in hud) c.Visible = true;
         game.Map.Zoom = 1f;

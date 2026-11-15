@@ -85,7 +85,7 @@ public sealed class ClientWorld
 
     /// <summary>
     /// Forecast of the selected unit attacking a tile, or null if there is nobody to fight there. It is an estimate:
-    /// enemy institutions and the walls of enemy cities are not visible to the client, so the real numbers may differ.
+    /// enemy institutions and defensive auras are not visible to the client, so the real numbers may differ.
     /// </summary>
     public CombatOdds? EstimateCombat(UnitDto att, int tile)
     {
@@ -128,10 +128,11 @@ public sealed class ClientWorld
             if (t.Relief == Relief.Hills) { mod += 0.25; notes.Add("холмы +25%"); }
             if (t.Forest) { mod += 0.25; notes.Add("лес +25%"); }
             if (d.Fortified) { mod += 0.25; notes.Add("укреплён +25%"); }
-            if (CityAt(d.Tile) != null)
+            if (CityAt(d.Tile) is { } town)
             {
                 if (d.Def.CityDefPct > 0) { mod += d.Def.CityDefPct / 100.0; notes.Add($"в городе +{d.Def.CityDefPct}%"); }
-                notes.Add("стены города неизвестны");
+                int walls = town.Buildings.Sum(id => Rules.Building(id)?.DefPct ?? 0);
+                if (walls != 0) { mod += walls / 100.0; notes.Add($"укрепления города +{walls}%"); }
             }
             if (d.Shield > 0) { mod += d.Shield / 100.0; notes.Add($"щит +{d.Shield}%"); }
             return Field(d, notes) * mod * d.Hp / 100.0;

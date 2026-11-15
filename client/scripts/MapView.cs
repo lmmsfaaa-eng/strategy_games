@@ -88,8 +88,8 @@ public partial class MapView : Node3D
     private sealed class CityNode
     {
         public Node3D Root = null!;
-        public List<MeshInstance3D> Houses = new();
-        public int Owner = -1, Pop = -1;
+        public MeshInstance3D Body = null!;
+        public string Look = "";
     }
 
     public MapView(GameScreen screen, ClientWorld world)
@@ -550,45 +550,11 @@ public partial class MapView : Node3D
                         decor.Pyramid(c + off + trunkTop * 3.4f, 0.15f, 0.36f, 5, leaf.Lightened(0.08f));
                     }
                 }
-                switch (t.Improvement)
+                if (t.Improvement != Improvement.None)
                 {
-                    case Improvement.Farm:
-                        for (int i = -1; i <= 1; i++)
-                            decor.Box(c + new Vector3(0.05f, 0.03f, 0.38f + i * 0.16f), new Vector3(0.8f, 0.05f, 0.09f), Shade(Ui.Col(0xE6D36A)));
-                        break;
-                    case Improvement.Mine:
-                        decor.Pyramid(c + new Vector3(0.3f, 0, 0.35f), 0.2f, 0.28f, 4, Shade(Ui.Col(0x2E2E2E)));
-                        decor.Box(c + new Vector3(0.05f, 0.08f, 0.4f), new Vector3(0.16f, 0.16f, 0.16f), Shade(Ui.Col(0x6A5038)));
-                        break;
-                    case Improvement.Plantation:
-                        for (int i = -1; i <= 1; i++)
-                            for (int j = 0; j < 2; j++)
-                                decor.Pyramid(c + new Vector3(0.05f + i * 0.24f, 0, 0.32f + j * 0.2f), 0.09f, 0.16f, 5, Shade(Ui.Col(0x3FA34A)));
-                        break;
-                    case Improvement.Quarry:
-                        decor.Box(c + new Vector3(0.1f, 0.07f, 0.4f), new Vector3(0.34f, 0.14f, 0.26f), Shade(Ui.Col(0xB8B8B0)));
-                        decor.Box(c + new Vector3(0.36f, 0.05f, 0.22f), new Vector3(0.18f, 0.1f, 0.18f), Shade(Ui.Col(0x9A9A92)));
-                        break;
-                    case Improvement.Pasture:
-                        foreach (var (px, pz, sx, sz) in new[] { (0.1f, 0.2f, 0.6f, 0.04f), (0.1f, 0.6f, 0.6f, 0.04f), (-0.2f, 0.4f, 0.04f, 0.4f), (0.4f, 0.4f, 0.04f, 0.4f) })
-                            decor.Box(c + new Vector3(px, 0.07f, pz), new Vector3(sx, 0.1f, sz), Shade(Ui.Col(0x8A6A44)));
-                        break;
-                    case Improvement.Camp:
-                        decor.Pyramid(c + new Vector3(0.22f, 0, 0.4f), 0.2f, 0.26f, 4, Shade(Ui.Col(0xD8C49A)), Mathf.Pi / 4);
-                        break;
-                    case Improvement.FishingBoats:
-                        decor.Box(c + new Vector3(0.25f, 0.05f, 0.35f), new Vector3(0.3f, 0.08f, 0.12f), Shade(Ui.Col(0x7A5232)));
-                        decor.Box(c + new Vector3(-0.2f, 0.05f, 0.45f), new Vector3(0.12f, 0.08f, 0.28f), Shade(Ui.Col(0x7A5232)));
-                        decor.Box(c + new Vector3(0.25f, 0.2f, 0.35f), new Vector3(0.03f, 0.26f, 0.03f), Shade(Colors.White));
-                        break;
-                    case Improvement.OilWell:
-                        decor.Pyramid(c + new Vector3(0.25f, 0, 0.38f), 0.14f, 0.55f, 4, Shade(Ui.Col(0x2A2A2A)), Mathf.Pi / 4);
-                        decor.Box(c + new Vector3(0.25f, 0.04f, 0.38f), new Vector3(0.34f, 0.08f, 0.34f), Shade(Ui.Col(0x55504A)));
-                        break;
-                    case Improvement.Cottage:
-                        decor.Box(c + new Vector3(0.25f, 0.11f, 0.4f), new Vector3(0.3f, 0.22f, 0.26f), Shade(Ui.Col(0xE8D8B8)));
-                        decor.Pyramid(c + new Vector3(0.25f, 0.22f, 0.4f), 0.27f, 0.2f, 4, Shade(Ui.Col(0xA04030)), Mathf.Pi / 4);
-                        break;
+                    decor.Tint = Shade;
+                    Town.Improvement(decor, t.Improvement, c, t.Road);
+                    decor.Tint = null;
                 }
                 if (t.Resource != Resource.None)
                 {
@@ -674,45 +640,16 @@ public partial class MapView : Node3D
             if (W.Vis[c.Tile] == 0) continue;
             if (!_cities.TryGetValue(c.Id, out var n))
             {
-                n = new CityNode { Root = new Node3D { Position = Center(c.Tile) } };
+                n = new CityNode { Root = new Node3D { Position = Center(c.Tile) }, Body = new MeshInstance3D { MaterialOverride = _terrainMat } };
+                n.Root.AddChild(n.Body);
                 AddChild(n.Root);
                 _cities[c.Id] = n;
             }
-            if (n.Owner != c.Owner || n.Pop != c.Pop)
-            {
-                n.Owner = c.Owner; n.Pop = c.Pop;
-                foreach (var h in n.Houses) h.QueueFree();
-                n.Houses.Clear();
-                // a ring of houses that grows with the population, so the unit standing in the centre stays visible
-                int houses = Math.Clamp(3 + c.Pop, 4, 12);
-                var rnd = new Random(c.Id * 7919);
-                for (int i = 0; i < houses; i++)
-                {
-                    float ang = Mathf.Tau * i / houses + 0.3f;
-                    float hgt = 0.28f + (float)rnd.NextDouble() * 0.3f + Math.Min(0.5f, c.Pop * 0.035f);
-                    float wid = 0.2f + (float)rnd.NextDouble() * 0.1f;
-                    var house = new MeshInstance3D
-                    {
-                        Mesh = _houseMesh, Scale = new Vector3(wid, hgt, wid),
-                        Position = new Vector3(Mathf.Cos(ang) * 0.6f, hgt / 2, Mathf.Sin(ang) * 0.6f),
-                        MaterialOverride = i % 3 == 0 ? OwnerMat(c.Owner) : _wallMat,
-                    };
-                    n.Root.AddChild(house);
-                    n.Houses.Add(house);
-                }
-                var banner = new MeshInstance3D
-                {
-                    Mesh = _houseMesh, Scale = new Vector3(0.06f, 1.5f, 0.06f), Position = new Vector3(0.62f, 0.75f, -0.5f),
-                    MaterialOverride = OwnerMat(c.Owner),
-                };
-                var flag = new MeshInstance3D
-                {
-                    Mesh = _houseMesh, Scale = new Vector3(0.42f, 0.26f, 0.04f), Position = new Vector3(0.84f, 1.36f, -0.5f),
-                    MaterialOverride = OwnerMat(c.Owner),
-                };
-                n.Root.AddChild(banner); n.Root.AddChild(flag);
-                n.Houses.Add(banner); n.Houses.Add(flag);
-            }
+            int era = W.Players.TryGetValue(c.Owner, out var owner) ? owner.Era : 0;
+            string look = $"{c.Owner}|{c.Pop}|{era}|{c.Capital}|{string.Join(',', c.Buildings)}";
+            if (n.Look == look) continue;
+            n.Look = look;
+            n.Body.Mesh = Town.City(c.Id, c.Pop, era, c.Capital, c.Buildings, OwnerColor(c.Owner));
         }
     }
 

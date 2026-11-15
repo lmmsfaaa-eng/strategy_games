@@ -60,6 +60,7 @@ public sealed partial class Game
     {
         Id = c.Id, Owner = c.Owner, Tile = c.Tile, Pop = c.Pop, Radius = c.Radius, Name = c.Name,
         Capital = c.Capital, Disorder = c.DisorderTurns > 0, Religion = c.Religion,
+        Buildings = c.Buildings.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
     };
 
     private CityDto CityOwnDto(City c)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Godot;
 using IH.Shared;
 using Resource = IH.Shared.Resource;
@@ -715,5 +716,442 @@ public static class Models
                 else { Man(); Helmet(0, 1, steel); Pole(0.2f, 0.07f, g + 0.34f, g + 0.78f, steel, 0.035f); Shield(-0.16f, false); }
                 break;
         }
+    }
+}
+
+/// <summary>Cities and tile improvements: every building of a city stands in it as its own little landmark.</summary>
+public static class Town
+{
+    private static Color C(int rgb) => Ui.Col(rgb);
+    private static Vector3 V(float x, float y, float z) => new(x, y, z);
+
+    private static int Hash(string s)
+    {
+        unchecked { uint h = 2166136261; foreach (char ch in s) h = (h ^ ch) * 16777619; return (int)(h & 0x7FFFFFFF); }
+    }
+
+    /// <summary>
+    /// The whole city as one mesh: houses that multiply with the population and change with the era, a landmark per
+    /// building on a spot that never moves once taken, walls around it all, and the owner's flag.
+    /// </summary>
+    public static Mesh City(int cityId, int pop, int era, bool capital, IReadOnlyCollection<string> buildings, Color team)
+    {
+        var b = new MeshBuilder();
+        // two rings of building plots; the middle stays free for the garrison
+        var slots = new List<Vector3>();
+        for (int i = 0; i < 8; i++) { float a = Mathf.Tau * i / 8 + 0.2f; slots.Add(V(Mathf.Cos(a) * 0.47f, 0, Mathf.Sin(a) * 0.47f)); }
+        for (int i = 0; i < 14; i++) { float a = Mathf.Tau * i / 14; slots.Add(V(Mathf.Cos(a) * 0.74f, 0, Mathf.Sin(a) * 0.74f)); }
+        var taken = new bool[slots.Count];
+
+        void At(Vector3 p, float scale, Action draw)
+        {
+            // every landmark faces the camera's usual side
+            b.Xf = new Transform3D(Basis.Identity.Scaled(Vector3.One * scale), p);
+            draw();
+            b.Xf = Transform3D.Identity;
+        }
+
+        bool walls = buildings.Contains("walls");
+        foreach (string id in buildings.OrderBy(x => x != "palace").ThenBy(x => x, StringComparer.Ordinal))
+        {
+            if (id == "walls") continue;
+            int start = id == "palace" ? 11 + 8 : Hash(id) % slots.Count, slot = -1; // the palace: back of the outer ring
+            for (int k = 0; k < slots.Count && slot < 0; k++) if (!taken[(start + k) % slots.Count]) slot = (start + k) % slots.Count;
+            if (slot < 0) break;
+            taken[slot] = true;
+            string what = id;
+            At(slots[slot], id == "palace" ? 1.5f : 1.3f, () => Landmark(b, what, team));
+        }
+
+        // houses on the plots that are left: more of them as the city grows
+        var rnd = new Random(cityId * 7919 + 13);
+        int houses = Math.Clamp(2 + pop, 3, slots.Count);
+        var order = Enumerable.Range(0, slots.Count).OrderBy(_ => rnd.Next()).ToList();
+        foreach (int i in order)
+        {
+            if (houses <= 0) break;
+            if (taken[i]) continue;
+            houses--;
+            float tall = (float)rnd.NextDouble();
+            bool teamRoof = rnd.Next(4) == 0;
+            At(slots[i] + V((float)rnd.NextDouble() * 0.06f - 0.03f, 0, (float)rnd.NextDouble() * 0.06f - 0.03f), 1.2f, () => House(b, era, tall, teamRoof ? team : (Color?)null, pop));
+        }
+
+        if (walls) Walls(b, team);
+        // the flag: taller and with a gold top over a capital
+        b.Box(V(0.6f, 0.6f, -0.62f), V(0.035f, 1.2f, 0.035f), C(0x6B4A2C));
+        b.Box(V(0.74f, 1.08f, -0.62f), V(0.26f, 0.17f, 0.02f), team);
+        if (capital) b.Gem(V(0.6f, 1.25f, -0.62f), 0.06f, C(0xF2CF63), 1, 4);
+        return b.Commit()!;
+    }
+
+    private static void House(MeshBuilder b, int era, float tall, Color? roof, int pop)
+    {
+        if (era <= 0)
+        {   // huts
+            b.Column(V(0, 0, 0), 0.085f, 0.1f + tall * 0.03f, C(0xC9B48A), 6);
+            b.Pyramid(V(0, 0.1f + tall * 0.03f, 0), 0.12f, 0.12f, 6, roof ?? C(0xB89A54));
+        }
+        else if (era <= 3)
+        {   // plastered houses under tiled roofs
+            float h = 0.13f + tall * 0.1f + Math.Min(0.08f, pop * 0.006f);
+            b.Box(V(0, h / 2, 0), V(0.17f, h, 0.15f), C(0xEADFC8));
+            b.Pyramid(V(0, h, 0), 0.14f, 0.1f, 4, roof ?? (tall > 0.5f ? C(0xB5533A) : C(0x9A4A34)), Mathf.Pi / 4);
+        }
+        else if (era <= 5)
+        {   // brick blocks with flat roofs
+            float h = 0.2f + tall * 0.22f;
+            b.Box(V(0, h / 2, 0), V(0.17f, h, 0.16f), tall > 0.5f ? C(0xA8705A) : C(0xB8B0A4));
+            b.Box(V(0, h + 0.012f, 0), V(0.19f, 0.024f, 0.18f), roof ?? C(0x55504A));
+            for (float y = 0.08f; y < h - 0.04f; y += 0.08f) b.Box(V(0, y, 0.081f), V(0.12f, 0.03f, 0.005f), C(0x2E3A4A));
+        }
+        else
+        {   // glass towers
+            float h = 0.3f + tall * 0.45f;
+            b.Box(V(0, h / 2, 0), V(0.15f, h, 0.15f), tall > 0.5f ? C(0x7FB6D8) : C(0x9AC8E0));
+            b.Box(V(0, h + 0.015f, 0), V(0.1f, 0.03f, 0.1f), roof ?? C(0xDCE6EE));
+            for (float y = 0.1f; y < h; y += 0.1f) b.Box(V(0, y, 0), V(0.155f, 0.012f, 0.155f), C(0x4A6A88));
+        }
+    }
+
+    private static void Walls(MeshBuilder b, Color team)
+    {
+        var stone = C(0xB4AEA0);
+        const float r = 0.97f;
+        for (int i = 0; i < 6; i++)
+        {
+            float a0 = Mathf.Tau * i / 6 + Mathf.Pi / 6, a1 = a0 + Mathf.Tau / 6;
+            var p0 = V(Mathf.Cos(a0) * r, 0, Mathf.Sin(a0) * r); var p1 = V(Mathf.Cos(a1) * r, 0, Mathf.Sin(a1) * r);
+            var mid = (p0 + p1) / 2;
+            float len = p0.DistanceTo(p1), ang = Mathf.Atan2(-(p1.Z - p0.Z), p1.X - p0.X);
+            b.Xf = new Transform3D(new Basis(Vector3.Up, ang), mid);
+            bool gate = i == 0; // the edge facing the camera
+            if (gate)
+            {
+                b.Box(V(-len * 0.32f, 0.11f, 0), V(len * 0.36f, 0.22f, 0.07f), stone);
+                b.Box(V(len * 0.32f, 0.11f, 0), V(len * 0.36f, 0.22f, 0.07f), stone);
+                b.Box(V(0, 0.25f, 0), V(len * 0.3f, 0.1f, 0.09f), stone.Darkened(0.1f));
+                b.Box(V(0, 0.1f, 0), V(len * 0.26f, 0.2f, 0.03f), C(0x5A3E26));
+            }
+            else b.Box(V(0, 0.11f, 0), V(len, 0.22f, 0.07f), stone);
+            for (float x = -len / 2 + 0.1f; x < len / 2 - 0.05f; x += 0.16f)
+                if (!gate || Math.Abs(x) > len * 0.16f) b.Box(V(x, 0.245f, 0), V(0.07f, 0.05f, 0.08f), stone.Lightened(0.08f));
+            b.Xf = Transform3D.Identity;
+            b.Column(p0, 0.085f, 0.34f, stone.Darkened(0.06f), 6);
+            b.Pyramid(p0 + V(0, 0.34f, 0), 0.1f, 0.1f, 6, team);
+        }
+    }
+
+    /// <summary>One building, about a fifth of a tile wide, standing at the origin.</summary>
+    private static void Landmark(MeshBuilder b, string id, Color team)
+    {
+        Color white = C(0xF2EEE4), stone = C(0xB8B2A6), brick = C(0xA8644A), dark = C(0x2E2E34), gold = C(0xF2CF63), wood = C(0x7A5232),
+            blue = C(0x3E6FB8), glass = C(0x7FD0F0);
+        void Columns(float w, float h, float z)
+        {
+            for (int i = -1; i <= 1; i++) b.Box(V(i * w * 0.36f, h / 2, z), V(0.03f, h, 0.03f), white);
+        }
+        void Hall(float w, float h, float d, Color wall, Color roof, bool pitched = true)
+        {
+            b.Box(V(0, h / 2, 0), V(w, h, d), wall);
+            if (pitched)
+            {
+                b.Quad(V(-w / 2 - 0.01f, h, d / 2 + 0.01f), V(w / 2 + 0.01f, h, d / 2 + 0.01f), V(w / 2 + 0.01f, h + w * 0.3f, 0), V(-w / 2 - 0.01f, h + w * 0.3f, 0), Vector3.Back + Vector3.Up, roof);
+                b.Quad(V(-w / 2 - 0.01f, h, -d / 2 - 0.01f), V(w / 2 + 0.01f, h, -d / 2 - 0.01f), V(w / 2 + 0.01f, h + w * 0.3f, 0), V(-w / 2 - 0.01f, h + w * 0.3f, 0), Vector3.Forward + Vector3.Up, roof.Darkened(0.12f));
+                foreach (int s in new[] { -1, 1 })
+                    b.Tri(V(s * (w / 2), h, d / 2), V(s * (w / 2), h, -d / 2), V(s * (w / 2), h + w * 0.3f, 0), V(s, 0, 0), wall);
+            }
+            else b.Box(V(0, h + 0.012f, 0), V(w + 0.02f, 0.024f, d + 0.02f), roof);
+        }
+        void Chimney(float x, float z, float h, bool smoke = true)
+        {
+            b.Column(V(x, 0, z), 0.03f, h, C(0x6A3A2E), 6, 0.024f);
+            if (smoke) { b.Gem(V(x + 0.02f, h + 0.05f, z), 0.04f, C(0xCFCFD4)); b.Gem(V(x + 0.05f, h + 0.13f, z), 0.03f, C(0xE4E4E8)); }
+        }
+
+        switch (id)
+        {
+            case "palace":
+                Hall(0.32f, 0.2f, 0.2f, white, team, false);
+                b.Box(V(0, 0.27f, 0), V(0.16f, 0.12f, 0.14f), white);
+                b.Gem(V(0, 0.37f, 0), 0.08f, gold, 0.9f, 8);
+                foreach (int s in new[] { -1, 1 }) { b.Column(V(s * 0.17f, 0, 0.06f), 0.04f, 0.32f, white, 6); b.Pyramid(V(s * 0.17f, 0.32f, 0.06f), 0.055f, 0.1f, 6, team); }
+                b.Box(V(0, 0.07f, 0.101f), V(0.06f, 0.14f, 0.01f), team.Darkened(0.2f));
+                break;
+            case "shrine":
+                b.Box(V(0, 0.03f, 0), V(0.18f, 0.06f, 0.18f), stone);
+                b.Box(V(0, 0.1f, 0), V(0.1f, 0.08f, 0.1f), stone.Lightened(0.1f));
+                b.Gem(V(0, 0.21f, 0), 0.05f, C(0xFFD76A), 1.6f, 5);
+                break;
+            case "monument":
+                b.Box(V(0, 0.025f, 0), V(0.16f, 0.05f, 0.16f), stone);
+                b.Column(V(0, 0.05f, 0), 0.045f, 0.36f, white, 4, 0.025f);
+                b.Pyramid(V(0, 0.41f, 0), 0.03f, 0.06f, 4, gold);
+                break;
+            case "granary":
+                b.Column(V(0, 0, 0), 0.1f, 0.2f, C(0xD8C08A), 8);
+                b.Pyramid(V(0, 0.2f, 0), 0.13f, 0.12f, 8, C(0xB8923E));
+                b.Box(V(0, 0.06f, 0.1f), V(0.05f, 0.1f, 0.01f), wood);
+                break;
+            case "library":
+                Hall(0.24f, 0.16f, 0.16f, white, blue);
+                Columns(0.24f, 0.16f, 0.095f);
+                break;
+            case "temple":
+                b.Box(V(0, 0.02f, 0), V(0.28f, 0.04f, 0.22f), stone);
+                Hall(0.2f, 0.2f, 0.14f, white, gold.Darkened(0.1f));
+                foreach (int z in new[] { -1, 1 }) Columns(0.26f, 0.2f, z * 0.09f);
+                break;
+            case "harbor":
+                b.Box(V(0, 0.02f, 0), V(0.3f, 0.04f, 0.1f), wood);
+                b.Box(V(0.1f, 0.02f, 0.1f), V(0.08f, 0.04f, 0.16f), wood);
+                b.Box(V(-0.07f, 0.09f, 0), V(0.12f, 0.1f, 0.09f), C(0xD8C8A8));
+                b.Box(V(0.1f, 0.16f, 0), V(0.02f, 0.26f, 0.02f), dark);
+                b.Box(V(0.1f, 0.28f, 0.06f), V(0.02f, 0.02f, 0.16f), dark);
+                b.Box(V(-0.02f, 0.05f, 0.13f), V(0.1f, 0.03f, 0.05f), C(0x8FC4E8));
+                break;
+            case "market":
+                foreach (var (x, col) in new[] { (-0.09f, C(0xD0402E)), (0.0f, C(0xF2C230)), (0.09f, C(0x3E8FD0)) })
+                {
+                    b.Box(V(x, 0.04f, 0), V(0.075f, 0.08f, 0.1f), wood);
+                    b.Quad(V(x - 0.045f, 0.16f, -0.06f), V(x + 0.045f, 0.16f, -0.06f), V(x + 0.045f, 0.11f, 0.09f), V(x - 0.045f, 0.11f, 0.09f), Vector3.Up, col);
+                    b.Box(V(x, 0.1f, -0.055f), V(0.012f, 0.12f, 0.012f), wood);
+                }
+                break;
+            case "forge":
+                Hall(0.2f, 0.13f, 0.16f, C(0x4A4A50), C(0x2E2E34));
+                b.Box(V(0, 0.05f, 0.081f), V(0.08f, 0.08f, 0.01f), C(0xFF7A1F));
+                Chimney(0.06f, -0.04f, 0.32f);
+                break;
+            case "courthouse":
+                Hall(0.24f, 0.17f, 0.17f, white, stone, false);
+                b.Gem(V(0, 0.22f, 0), 0.08f, stone.Lightened(0.1f), 0.7f, 8);
+                Columns(0.24f, 0.17f, 0.1f);
+                break;
+            case "colosseum":
+                b.Column(V(0, 0, 0), 0.15f, 0.14f, C(0xD8CBB0), 10, 0.16f);
+                b.Column(V(0, 0.1f, 0), 0.11f, 0.045f, C(0x8A7A5A), 10);
+                b.Column(V(0, 0.105f, 0), 0.07f, 0.045f, C(0xD9C47A), 10);
+                break;
+            case "university":
+                Hall(0.26f, 0.16f, 0.15f, C(0xC8A078), blue);
+                b.Box(V(0.09f, 0.16f, 0), V(0.08f, 0.32f, 0.08f), C(0xC8A078));
+                b.Pyramid(V(0.09f, 0.32f, 0), 0.07f, 0.12f, 4, blue, Mathf.Pi / 4);
+                break;
+            case "bank":
+                Hall(0.2f, 0.2f, 0.16f, C(0xC8CCB8), C(0x6A7A5A), false);
+                Columns(0.2f, 0.2f, 0.09f);
+                b.Box(V(0, 0.26f, 0), V(0.07f, 0.07f, 0.07f), gold);
+                break;
+            case "observatory":
+                b.Column(V(0, 0, 0), 0.09f, 0.18f, white, 8);
+                b.Pyramid(V(0, 0.18f, 0), 0.1f, 0.1f, 8, C(0x8FA8C8));
+                b.Xf *= new Transform3D(new Basis(Vector3.Back, -0.8f), V(0.02f, 0.25f, 0));
+                b.Box(V(0, 0.05f, 0), V(0.03f, 0.16f, 0.03f), dark);
+                break;
+            case "theatre":
+                Hall(0.24f, 0.17f, 0.16f, white, C(0x8A3A5A));
+                b.Box(V(0, 0.08f, 0.081f), V(0.12f, 0.13f, 0.01f), C(0xC82A3A));
+                break;
+            case "factory":
+                b.Box(V(0, 0.08f, 0), V(0.28f, 0.16f, 0.18f), brick);
+                for (int i = -1; i <= 1; i++)
+                    b.Quad(V(i * 0.093f - 0.046f, 0.16f, 0.09f), V(i * 0.093f - 0.046f, 0.16f, -0.09f), V(i * 0.093f + 0.046f, 0.22f, -0.09f), V(i * 0.093f + 0.046f, 0.22f, 0.09f), Vector3.Up + Vector3.Left, C(0x55504A));
+                Chimney(-0.1f, -0.05f, 0.4f); Chimney(0.0f, -0.05f, 0.34f);
+                break;
+            case "power_plant":
+                b.Column(V(-0.05f, 0, 0), 0.1f, 0.26f, C(0xD0D0CC), 10, 0.07f);
+                b.Gem(V(-0.05f, 0.33f, 0), 0.06f, C(0xF4F4F6));
+                b.Box(V(0.1f, 0.06f, 0), V(0.1f, 0.12f, 0.14f), C(0x8A8A90));
+                b.Box(V(0.1f, 0.14f, 0), V(0.02f, 0.06f, 0.02f), gold);
+                break;
+            case "broadcast":
+                b.Box(V(0, 0.03f, 0), V(0.12f, 0.06f, 0.12f), stone);
+                b.Pyramid(V(0, 0.06f, 0), 0.05f, 0.22f, 4, C(0xD0302A));
+                b.Pyramid(V(0, 0.2f, 0), 0.03f, 0.2f, 4, white);
+                b.Pyramid(V(0, 0.34f, 0), 0.016f, 0.16f, 4, C(0xD0302A));
+                b.Gem(V(0.04f, 0.26f, 0.02f), 0.035f, white, 0.4f, 8);
+                break;
+            case "cathedral":
+                Hall(0.16f, 0.2f, 0.26f, C(0xD8D2C4), C(0x5A6A8A));
+                b.Box(V(0, 0.2f, 0.1f), V(0.09f, 0.4f, 0.09f), C(0xD8D2C4));
+                b.Pyramid(V(0, 0.4f, 0.1f), 0.07f, 0.2f, 4, C(0x5A6A8A), Mathf.Pi / 4);
+                b.Box(V(0, 0.64f, 0.1f), V(0.015f, 0.08f, 0.015f), gold); b.Box(V(0, 0.65f, 0.1f), V(0.05f, 0.015f, 0.015f), gold);
+                b.Box(V(0, 0.16f, 0.146f), V(0.04f, 0.07f, 0.005f), glass);
+                break;
+            case "stock_exchange":
+                Hall(0.26f, 0.2f, 0.17f, white, C(0x3E8A5A));
+                foreach (int i in new[] { -2, -1, 0, 1, 2 }) b.Box(V(i * 0.05f, 0.1f, 0.1f), V(0.022f, 0.2f, 0.022f), white);
+                break;
+            case "shipyard":
+                b.Box(V(0, 0.02f, 0), V(0.3f, 0.04f, 0.16f), C(0x8A8A84));
+                b.Box(V(-0.03f, 0.08f, 0.02f), V(0.2f, 0.08f, 0.07f), brick.Darkened(0.2f));
+                b.Tri(V(0.07f, 0.04f, -0.015f), V(0.07f, 0.04f, 0.055f), V(0.13f, 0.12f, 0.02f), Vector3.Right, brick.Darkened(0.2f));
+                foreach (int s in new[] { -1, 1 }) b.Box(V(s * 0.1f, 0.17f, -0.05f), V(0.02f, 0.3f, 0.02f), C(0xE0A81F));
+                b.Box(V(0, 0.32f, -0.05f), V(0.26f, 0.025f, 0.03f), C(0xE0A81F));
+                break;
+            case "stadium":
+                b.Column(V(0, 0, 0), 0.17f, 0.1f, C(0xC8CCD2), 12, 0.19f);
+                b.Column(V(0, 0.07f, 0), 0.13f, 0.035f, C(0x4E9A3E), 12);
+                b.Box(V(0, 0.108f, 0), V(0.1f, 0.004f, 0.004f), white);
+                foreach (int s in new[] { -1, 1 }) b.Box(V(s * 0.16f, 0.16f, 0), V(0.015f, 0.2f, 0.015f), dark);
+                break;
+            case "laboratory":
+                Hall(0.24f, 0.14f, 0.16f, C(0xEEF2F6), C(0xC8D2DC), false);
+                b.Box(V(0, 0.08f, 0.081f), V(0.2f, 0.05f, 0.005f), glass);
+                b.Gem(V(0.06f, 0.21f, 0), 0.055f, white, 0.5f, 8);
+                b.Box(V(0.06f, 0.17f, 0), V(0.015f, 0.05f, 0.015f), dark);
+                break;
+            case "hospital":
+                Hall(0.22f, 0.22f, 0.16f, C(0xF6F6F6), C(0xD0D4DA), false);
+                b.Box(V(0, 0.14f, 0.081f), V(0.03f, 0.1f, 0.005f), C(0xE0302A));
+                b.Box(V(0, 0.14f, 0.081f), V(0.1f, 0.03f, 0.005f), C(0xE0302A));
+                break;
+            case "fusion_plant":
+                b.Column(V(0, 0, 0), 0.15f, 0.08f, C(0x8A94A2), 10);
+                b.Column(V(0, 0.08f, 0), 0.12f, 0.05f, C(0x5A6472), 10, 0.1f);
+                b.Gem(V(0, 0.22f, 0), 0.08f, C(0x7FF4FF), 1, 8);
+                foreach (int i in new[] { 0, 1, 2 }) { float a = Mathf.Tau * i / 3; b.Box(V(Mathf.Cos(a) * 0.13f, 0.14f, Mathf.Sin(a) * 0.13f), V(0.025f, 0.28f, 0.025f), C(0xC8D2DC)); }
+                break;
+            case "nanoforge":
+                b.Box(V(0, 0.09f, 0), V(0.22f, 0.18f, 0.18f), C(0x23262E));
+                foreach (float y in new[] { 0.05f, 0.1f, 0.15f }) b.Box(V(0, y, 0.091f), V(0.18f, 0.012f, 0.004f), C(0x5FF0FF));
+                b.Gem(V(0, 0.26f, 0), 0.06f, C(0x5FF0FF), 1.4f, 4);
+                break;
+            case "orbital_hub":
+                b.Box(V(0, 0.03f, 0), V(0.16f, 0.06f, 0.16f), C(0x8A94A2));
+                b.Column(V(0, 0.06f, 0), 0.03f, 0.56f, C(0xE4E8EE), 6, 0.012f);
+                b.Column(V(0, 0.44f, 0), 0.1f, 0.02f, C(0xB0BCCB), 10);
+                b.Gem(V(0, 0.66f, 0), 0.03f, C(0xFF5A4A));
+                break;
+            case "quantum_lab":
+                b.Column(V(0, 0, 0), 0.12f, 0.06f, C(0x3A3550), 8);
+                b.Gem(V(0, 0.26f, 0), 0.1f, C(0xB07CFF), 1.2f, 6);
+                foreach (int s in new[] { -1, 1 }) b.Box(V(s * 0.11f, 0.12f, 0), V(0.02f, 0.24f, 0.02f), C(0xDCD6F0));
+                break;
+            case "social_center":
+                b.Column(V(0, 0, 0), 0.15f, 0.05f, white, 10);
+                b.Pyramid(V(0, 0.05f, 0), 0.14f, 0.16f, 10, C(0xF0A8C8));
+                b.Gem(V(0, 0.24f, 0), 0.03f, gold);
+                break;
+            case "herbalist":
+                b.Column(V(0, 0, 0), 0.09f, 0.1f, C(0xA88A5A), 6);
+                b.Pyramid(V(0, 0.1f, 0), 0.13f, 0.14f, 6, C(0x4E9A4A));
+                b.Gem(V(0.12f, 0.04f, 0.06f), 0.04f, C(0x7FE0A8)); b.Gem(V(-0.11f, 0.04f, 0.08f), 0.035f, C(0xE06A8A));
+                break;
+            case "totem_pole":
+                b.Column(V(0, 0, 0), 0.04f, 0.44f, wood, 6);
+                b.Box(V(0, 0.12f, 0), V(0.1f, 0.07f, 0.09f), C(0xD0402E));
+                b.Box(V(0, 0.24f, 0), V(0.1f, 0.07f, 0.09f), C(0x3EB8A0));
+                b.Box(V(0, 0.36f, 0), V(0.24f, 0.05f, 0.03f), C(0xF2C230));
+                break;
+            case "stone_circle":
+                for (int i = 0; i < 6; i++) { float a = Mathf.Tau * i / 6; b.Box(V(Mathf.Cos(a) * 0.12f, 0.08f, Mathf.Sin(a) * 0.12f), V(0.045f, 0.16f, 0.045f), stone); }
+                b.Gem(V(0, 0.12f, 0), 0.04f, C(0x7FE0A8), 1.5f);
+                break;
+            case "mage_tower":
+                b.Column(V(0, 0, 0), 0.07f, 0.4f, C(0x6A5AA8), 8, 0.055f);
+                b.Column(V(0, 0.4f, 0), 0.085f, 0.04f, C(0x4A3A8A), 8);
+                b.Pyramid(V(0, 0.44f, 0), 0.085f, 0.16f, 8, C(0x3A2C72));
+                b.Gem(V(0, 0.68f, 0), 0.045f, C(0xFF8A3A));
+                break;
+            case "alchemy_lab":
+                Hall(0.2f, 0.12f, 0.15f, C(0x8A7A6A), C(0x4A3A5A));
+                b.Gem(V(0.05f, 0.27f, 0), 0.05f, C(0x7CFF4A));
+                b.Column(V(0.05f, 0.18f, 0), 0.015f, 0.06f, glass, 5);
+                break;
+            default:
+            {
+                // buildings from mods: a hall whose roof tells what it is for
+                var x = Rules.Building(id)?.X ?? Rules.ModBuilding.None;
+                if (x.Bombard > 0) goto case "mage_tower";
+                Hall(0.2f, 0.14f, 0.16f, C(0xD8CCB8), x.Power > 0 ? Ui.Power : team);
+                if (x.Power > 0) b.Gem(V(0, 0.28f, 0), 0.045f, Ui.Power, 1.5f);
+                break;
+            }
+        }
+    }
+
+    // --------------------------------------------------------- improvements
+    /// <summary>What workers have built on a tile; drawn in the near-right part of it, clear of resources and units.</summary>
+    public static void Improvement(MeshBuilder b, Improvement kind, Vector3 c, bool road)
+    {
+        var saved = b.Xf;
+        b.Xf = saved * new Transform3D(Basis.Identity, c + V(0.2f, 0, 0.36f));
+        Color wood = C(0x7A5232), white = C(0xEADFC8);
+        switch (kind)
+        {
+            case IH.Shared.Improvement.Farm:
+                for (int i = 0; i < 5; i++)
+                    b.Box(V(0, 0.02f, -0.2f + i * 0.1f), V(0.62f, 0.035f, 0.06f), i % 2 == 0 ? C(0xE6D36A) : C(0xB8C24A));
+                b.Box(V(-0.44f, 0.08f, 0.08f), V(0.14f, 0.16f, 0.16f), C(0xB5533A));        // barn
+                b.Pyramid(V(-0.44f, 0.16f, 0.08f), 0.13f, 0.09f, 4, C(0x6A3A2E), Mathf.Pi / 4);
+                break;
+            case IH.Shared.Improvement.Mine:
+                b.Pyramid(V(0.05f, 0, -0.05f), 0.26f, 0.3f, 5, C(0x5A554E));
+                b.Box(V(0.05f, 0.08f, 0.14f), V(0.15f, 0.16f, 0.06f), C(0x15151A));        // the adit
+                foreach (int s in new[] { -1, 1 }) b.Box(V(0.05f + s * 0.085f, 0.09f, 0.17f), V(0.03f, 0.18f, 0.03f), wood);
+                b.Box(V(0.05f, 0.19f, 0.17f), V(0.22f, 0.03f, 0.03f), wood);
+                b.Box(V(-0.22f, 0.05f, 0.2f), V(0.12f, 0.07f, 0.08f), C(0x4A4A50));        // ore cart
+                b.Box(V(-0.22f, 0.1f, 0.2f), V(0.09f, 0.03f, 0.05f), C(0xC8743A));
+                break;
+            case IH.Shared.Improvement.Plantation:
+                for (int i = -2; i <= 2; i++)
+                    for (int j = 0; j < 3; j++)
+                    {
+                        b.Column(V(i * 0.14f, 0, -0.14f + j * 0.14f), 0.012f, 0.08f, wood, 4);
+                        b.Gem(V(i * 0.14f, 0.11f, -0.14f + j * 0.14f), 0.055f, C(0x3FA34A), 0.9f);
+                    }
+                break;
+            case IH.Shared.Improvement.Quarry:
+                b.Box(V(0, 0.03f, 0), V(0.56f, 0.06f, 0.4f), C(0x9A9A92));
+                b.Box(V(-0.06f, 0.09f, -0.05f), V(0.4f, 0.06f, 0.28f), C(0xB8B8B0));
+                b.Box(V(-0.12f, 0.15f, -0.08f), V(0.24f, 0.06f, 0.18f), C(0xD0D0C8));
+                b.Box(V(0.2f, 0.1f, 0.12f), V(0.1f, 0.09f, 0.1f), C(0xE4E4DC));          // a cut block
+                break;
+            case IH.Shared.Improvement.Pasture:
+                foreach (var (px, pz, sx, sz) in new[] { (0f, -0.2f, 0.62f, 0.025f), (0f, 0.2f, 0.62f, 0.025f), (-0.31f, 0f, 0.025f, 0.4f), (0.31f, 0f, 0.025f, 0.4f) })
+                {
+                    b.Box(V(px, 0.1f, pz), V(sx, 0.02f, sz), wood);
+                    b.Box(V(px, 0.05f, pz), V(sx, 0.02f, sz), wood);
+                }
+                foreach (int sx in new[] { -1, 1 }) foreach (int sz in new[] { -1, 1 }) b.Box(V(sx * 0.31f, 0.07f, sz * 0.2f), V(0.035f, 0.14f, 0.035f), wood.Darkened(0.2f));
+                b.Box(V(0.14f, 0.04f, 0.05f), V(0.18f, 0.06f, 0.07f), C(0x6A8FB8));        // trough
+                break;
+            case IH.Shared.Improvement.Camp:
+                b.Pyramid(V(-0.08f, 0, 0), 0.2f, 0.26f, 4, C(0xD8C49A), Mathf.Pi / 4);
+                b.Tri(V(-0.14f, 0, 0.142f), V(-0.02f, 0, 0.142f), V(-0.08f, 0.14f, 0.09f), Vector3.Back, C(0x3A2C20));
+                b.Pyramid(V(0.2f, 0, 0.1f), 0.06f, 0.04f, 6, C(0x4A4A50));
+                b.Gem(V(0.2f, 0.08f, 0.1f), 0.04f, C(0xFF8A1F), 1.6f, 4);                // camp fire
+                b.Box(V(0.22f, 0.12f, -0.14f), V(0.02f, 0.24f, 0.02f), wood);
+                b.Box(V(0.22f, 0.2f, -0.08f), V(0.02f, 0.02f, 0.14f), wood);              // drying rack
+                break;
+            case IH.Shared.Improvement.FishingBoats:
+                foreach (var (x, z) in new[] { (0.05f, 0f), (-0.3f, 0.14f) })
+                {
+                    b.Box(V(x, 0.04f, z), V(0.26f, 0.07f, 0.1f), wood);
+                    b.Tri(V(x + 0.13f, 0.005f, z - 0.05f), V(x + 0.13f, 0.005f, z + 0.05f), V(x + 0.21f, 0.075f, z), Vector3.Right, wood);
+                    b.Box(V(x, 0.2f, z), V(0.02f, 0.28f, 0.02f), wood.Darkened(0.2f));
+                    b.Tri(V(x + 0.01f, 0.33f, z), V(x + 0.01f, 0.12f, z), V(x + 0.14f, 0.12f, z), Vector3.Back, Colors.White);
+                    b.Tri(V(x + 0.01f, 0.33f, z), V(x + 0.01f, 0.12f, z), V(x + 0.14f, 0.12f, z), Vector3.Forward, Colors.White);
+                }
+                break;
+            case IH.Shared.Improvement.OilWell:
+                b.Box(V(0, 0.02f, 0), V(0.3f, 0.04f, 0.3f), C(0x55504A));
+                foreach (int sx in new[] { -1, 1 }) foreach (int sz in new[] { -1, 1 })
+                    b.Quad(V(sx * 0.12f - 0.012f, 0.04f, sz * 0.12f), V(sx * 0.12f + 0.012f, 0.04f, sz * 0.12f), V(sx * 0.02f + 0.012f, 0.56f, sz * 0.02f), V(sx * 0.02f - 0.012f, 0.56f, sz * 0.02f), V(0, 0, sz), C(0x2A2A2A));
+                b.Box(V(0, 0.3f, 0), V(0.16f, 0.015f, 0.16f), C(0x2A2A2A));
+                b.Box(V(0, 0.57f, 0), V(0.07f, 0.03f, 0.07f), C(0xD0302A));
+                b.Column(V(0.24f, 0, 0.1f), 0.07f, 0.14f, C(0x8A8A90), 8);                 // tank
+                break;
+            case IH.Shared.Improvement.Cottage:
+                foreach (var (x, z, h, roof) in new[] { (-0.12f, -0.04f, 0.14f, 0xA04030), (0.12f, 0.02f, 0.11f, 0x8A3A2A), (0f, 0.17f, 0.1f, 0xB5533A) })
+                {
+                    b.Box(V(x, h / 2, z), V(0.17f, h, 0.14f), white);
+                    b.Pyramid(V(x, h, z), 0.14f, 0.1f, 4, C(roof), Mathf.Pi / 4);
+                }
+                break;
+        }
+        b.Xf = saved;
     }
 }
