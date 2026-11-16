@@ -28,7 +28,7 @@ public partial class DemoTour : Node
         GD.Print($"tour: saved {name}.png");
     }
 
-    private void Click(Vector2 position)
+    private void Click(Vector2 position, MouseButton button = MouseButton.Left)
     {
         var viewport = GetViewport();
         // Keep map projections in viewport coordinates and keep physical mouse motion out of the synthetic click.
@@ -37,7 +37,7 @@ public partial class DemoTour : Node
         {
             viewport.PushInput(new InputEventMouseButton
             {
-                ButtonIndex = MouseButton.Left, ButtonMask = pressed ? MouseButtonMask.Left : 0,
+                ButtonIndex = button, ButtonMask = !pressed ? 0 : button == MouseButton.Left ? MouseButtonMask.Left : MouseButtonMask.Right,
                 Pressed = pressed, Position = position, GlobalPosition = position,
             }, inLocalCoords: true);
         }
@@ -77,6 +77,56 @@ public partial class DemoTour : Node
         if (badgeSelected) GD.Print("tour: badge click-select OK");
         else GD.PushError("tour: badge click-select FAILED");
         return ok && badgeSelected;
+    }
+
+    private async Task<bool> ArmyStackTest()
+    {
+        if (!_main.InSandbox || LocalServer.SandboxToken is not { } token) return true;
+        var game = _main.Game!;
+        var w = _main.Net.World!;
+        var original = w.Units.Values.First(u => u.Owner == w.MyId && u.Def.Role == UnitRole.Military);
+        int start = original.Tile;
+        for (int i = 0; i < 4; i++)
+            game.Net.SendCommand(CmdType.SandboxSpawn, start, original.Type, s: token);
+        for (int i = 0; i < 30 && w.UnitsAt(start).Count(u => Rules.IsStacked(u.Def)) < 5; i++) await Wait(0.1);
+        var spawned = w.UnitsAt(start).Where(u => Rules.IsStacked(u.Def) && u.Id != original.Id).OrderBy(u => u.Id).ToArray();
+        bool passed = false;
+        try
+        {
+            if (spawned.Length != 4) return false;
+            game.Map.CenterOn(start);
+            game.Map.Select(original.Id);
+            await Wait(0.3);
+            Vector2 pos = game.Map.ScreenPos(start);
+            Vector2? marker = null;
+            for (int y = -72; marker == null && y <= 30; y += 4)
+                for (int x = -52; marker == null && x <= 52; x += 4)
+                {
+                    var at = pos + new Vector2(x, y);
+                    if (game.Banners.IsGroupAt(at, original.Id)) marker = at;
+                }
+            if (marker == null) return false;
+            Click(marker.Value);
+            var picker = game.GetChildren().OfType<ConfirmationDialog>().FirstOrDefault(dialog => dialog.Visible);
+            if (picker == null) return false;
+            var choices = picker.FindChildren("*", "CheckBox", owned: false).OfType<CheckBox>().ToArray();
+            if (choices.Length != 5) { picker.QueueFree(); return false; }
+            for (int i = 0; i < choices.Length; i++) choices[i].ButtonPressed = i is 1 or 2;
+            picker.EmitSignal(ConfirmationDialog.SignalName.Confirmed);
+            await Wait(0.2);
+            int target = w.Grid.Nb[start].FirstOrDefault(t => w.Vis[t] == 2 && w.Tiles[t].Passable && !w.UnitsAt(t).Any(), -1);
+            if (target < 0) return false;
+            Click(game.Map.ScreenPos(target), MouseButton.Right);
+            for (int i = 0; i < 40 && w.UnitsAt(target).Count(u => Rules.IsStacked(u.Def)) < 2; i++) await Wait(0.1);
+            passed = w.UnitsAt(start).Count(u => Rules.IsStacked(u.Def)) == 3
+                && w.UnitsAt(target).Select(u => u.Id).Order().SequenceEqual(spawned.Take(2).Select(u => u.Id));
+            return passed;
+        }
+        finally
+        {
+            foreach (var unit in spawned) game.Net.SendCommand(CmdType.Disband, unit.Id);
+            GD.Print(passed ? "tour: army stack split OK" : "tour: army stack split FAILED");
+        }
     }
 
     /// <summary>Casts "grow forest" the way a player does: pick the spell, then click a tile on the map.</summary>
@@ -160,6 +210,7 @@ public partial class DemoTour : Node
         var w = net.World;
         await Shot("01_start");
         bool clickPassed = await ClickTest();
+        bool splitPassed = await ArmyStackTest();
 
         var settler = w.Units.Values.FirstOrDefault(u => u.Owner == w.MyId && u.Def.Role == UnitRole.Settler);
         if (settler != null) net.SendCommand(CmdType.FoundCity, settler.Id);
@@ -239,6 +290,6 @@ public partial class DemoTour : Node
         game.Map.Zoom = 0.5f; game.Map.ApplyCamera(); await Shot("09_lod_medium");
         game.Map.Zoom = 0.2f; game.Map.ApplyCamera(); await Shot("10_lod_far");
         GD.Print($"tour: done at turn {w.Turn}, ping {net.PingMs} ms");
-        GetTree().Quit(clickPassed ? 0 : 1);
+        GetTree().Quit(clickPassed && splitPassed ? 0 : 1);
     }
 }

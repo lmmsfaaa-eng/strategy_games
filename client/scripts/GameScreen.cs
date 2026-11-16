@@ -36,9 +36,12 @@ public partial class GameScreen : Control
     private readonly VBoxContainer _trackers = Ui.V(6), _log = Ui.V(3), _tileBox = Ui.V(3), _unitBox = Ui.V(6), _oddsBox = Ui.V(4), _attention = Ui.V(3);
     private PanelContainer _logPanel = null!, _unitPanel = null!, _oddsPanel = null!, _attentionPanel = null!, _toastPanel = null!;
     private Control _leftColumn = null!;
+    private Control? _branchesNavigation;
     private readonly Label _ping = Ui.Lbl("", 11, Ui.Dim), _toast = Ui.Lbl("", 15), _banner = Ui.Lbl("Связь потеряна, переподключение…", 18, Ui.Bad, true);
     private readonly Button _endTurn;
     private readonly LineEdit _chat = new() { PlaceholderText = "Сообщение всем (Enter — отправить)" };
+    private Button _chatToggle = null!;
+    private bool _chatOpen;
     // ---- advisor window and the city panel
     private readonly ColorRect _backdrop = new() { Color = new Color(0.02f, 0.03f, 0.06f, 0.6f), MouseFilter = MouseFilterEnum.Stop, Visible = false };
     private readonly PanelContainer _window = Ui.Panel(16, new Color(Ui.PanelBg, 0.99f), Ui.Line, 12);
@@ -57,7 +60,7 @@ public partial class GameScreen : Control
     private bool _scrollToFrontier;
     /// <summary>A spell waiting for the player to pick its target on the map (caster 0 = cast by the empire).</summary>
     private (Rules.ActionDef action, int caster)? _aiming;
-    private bool _advancePending, _appendQueue, _firstDelta = true;
+    private bool _advancePending, _firstDelta = true;
     private double _toastUntil, _timerShownAt;
     private int _timerBase = -1;
 
@@ -82,6 +85,7 @@ public partial class GameScreen : Control
         MouseFilter = MouseFilterEnum.Ignore;
         Map = new MapView(this, world);
         AddChild(Map);
+        Map.AddChild(new ResidentView(this));
         Banners = new CityBanners(this);
         AddChild(Banners);
         AddChild(Sound);
@@ -115,8 +119,8 @@ public partial class GameScreen : Control
         _gold.TooltipText = "Золото: казна и доход за ход. Покупка в городах, улучшение юнитов, содержание. Подробности — «Экономика» (F2)";
         _science.TooltipText = "Наука за ход. Двигает дерево технологий (F6)";
         _culture.TooltipText = "Культура за ход. Двигает социальные институты (F7) и расширяет границы городов";
-        _faith.TooltipText = "Вера: запас и доход. Основание религии, миссионеры, покупка зданий и мирных юнитов (F8)";
-        _favor.TooltipText = "Дипломатическое одобрение: голоса во Всемирном конгрессе (F4). Его дают мир, единоверцы и мировые достижения";
+        _faith.TooltipText = "Вера: запас и доход. Основание религии, миссионеры и покупки в городах (F8)";
+        _favor.TooltipText = "Дипломатическое одобрение: голоса во Всемирном конгрессе (F4). Доход дают друзья и институты";
         foreach (var c in new[] { _gold, _science, _culture, _faith, _favor }) c.MouseFilter = MouseFilterEnum.Stop;
         var chips = Ui.H(8, _gold, _science, _culture, _faith, _favor);
         for (int i = 0; i < Rules.Branches.Count; i++)
@@ -136,10 +140,12 @@ public partial class GameScreen : Control
         var turnBox = Ui.H(7, new Icon(Ico.Turn, Ui.Gold, 15), _turn, _era);
         _micIndicator = Ui.Lbl("Микрофон", 12, Ui.Good);
         _micIndicator.Hide();
-        var row = Ui.H(8, turnBox, new VSeparator(), chips, Ui.Spacer(), _timer, _itr, _micIndicator,
-            Ui.Btn("⚙", ShowSettings, "Настройки", 17), _leave);
+        _chatToggle = Ui.Btn("Чат", () => SetChatOpen(!_chatOpen), "Показать чат и логи (T)", 13);
+        var row = Ui.H(8, turnBox, new VSeparator(), chips, Ui.Spacer(), _timer, _itr, _micIndicator, _chatToggle,
+            Ui.Btn("⚙", ShowSettings, "Настройки", 17), _nationAnchor, _leave);
         top.AddChild(row);
         AddChild(Ui.Dock(top, SizeFlags.Fill, SizeFlags.ShrinkBegin, 0, 0, 0, 0));
+        BuildNationHud();
     }
 
     internal static Color PowerColor(int branch) => (branch % 4) switch { 0 => Ui.Col(0x7FE0A8), 1 => Ui.Power, 2 => Ui.Col(0xFF9EC4), _ => Ui.Col(0x8FD0FF) };
@@ -164,7 +170,9 @@ public partial class GameScreen : Control
         foreach (var a in Advisors.Where(a => a.win is not (Win.Science or Win.Civics)))
         {
             var win = a.win;
-            nav.AddChild(Ui.RowBtn(a.title, a.key, () => Toggle(win), a.tip, a.icon, a.color));
+            var button = Ui.RowBtn(a.title, a.key, () => Toggle(win), a.tip, a.icon, a.color);
+            if (win == Win.Branches) _branchesNavigation = button;
+            nav.AddChild(button);
         }
         var navPanel = Ui.Panel(5, Ui.PanelBg);
         navPanel.AddChild(nav);
@@ -181,24 +189,31 @@ public partial class GameScreen : Control
         _logPanel = Ui.Panel(8, new Color(Ui.Bg, 0.84f), new Color(Ui.Line, 0.6f));
         _logPanel.MouseFilter = MouseFilterEnum.Ignore;
         _logPanel.CustomMinimumSize = new Vector2(308, 0);
-        _chat.Visible = false;
         _chat.TextSubmitted += text =>
         {
             if (text.Trim().Length > 0) Net.Send(MsgType.Chat, new TextMsg { Text = text });
             _chat.Text = "";
             _chat.ReleaseFocus();
         };
-        _chat.FocusExited += () => _chat.Visible = false;
         _log.MouseFilter = MouseFilterEnum.Ignore;
         var hint = Ui.Lbl("T — написать в чат", 11, new Color(Ui.Dim, 0.7f));
         hint.MouseFilter = MouseFilterEnum.Ignore;
         var box = Ui.V(5);
-        BuildAvatarStrip(box);
-        BuildNationHud(box);
         foreach (var child in new Control[] { _log, _chat, hint }) box.AddChild(child);
         box.MouseFilter = MouseFilterEnum.Ignore;
         _logPanel.AddChild(box);
-        AddChild(Ui.Dock(_logPanel, SizeFlags.ShrinkEnd, SizeFlags.ShrinkBegin, 8, TopH + 8));
+        AddChild(Ui.Dock(_logPanel, SizeFlags.ShrinkEnd, SizeFlags.ShrinkBegin, 8, NationHudHeight + 8));
+        SetChatOpen(false);
+    }
+
+    private void SetChatOpen(bool open, bool focus = false)
+    {
+        _chatOpen = open;
+        _logPanel.Visible = open;
+        _chatToggle.Text = open ? "Скрыть чат" : "Чат";
+        if (!_chat.IsInsideTree()) return;
+        if (!open) _chat.ReleaseFocus();
+        else if (focus) _chat.GrabFocus();
     }
 
     private void BuildBottom(out Button endTurn)
@@ -282,7 +297,7 @@ public partial class GameScreen : Control
             Ui.Btn("Закрыть  Esc", () => Toggle(Win.None), size: 13));
         _cityDock.AddChild(Ui.V(8, header, new HSeparator(), _cityScroll));
         _cityDock.Visible = false;
-        AddChild(Ui.Dock(_cityDock, SizeFlags.ShrinkEnd, SizeFlags.Fill, 8, TopH + 8, 8, 100)); // the end turn button stays in reach below
+        AddChild(Ui.Dock(_cityDock, SizeFlags.ShrinkEnd, SizeFlags.Fill, 8, NationHudHeight + 8, 8, 100)); // the end turn button stays in reach below
         _body = _windowBody;
         FitWindow();
     }
@@ -310,7 +325,7 @@ public partial class GameScreen : Control
             HandleContractNotice(e);
             string? text = W.Describe(e);
             if (text == null) continue;
-            bool bad = e.Type is EventKind.Protest or EventKind.Secession or EventKind.Bankrupt or EventKind.WarDeclared;
+            bool bad = e.Type is EventKind.Bankrupt or EventKind.WarDeclared;
             Log(text, bad ? Ui.Bad : e.Type switch
             {
                 EventKind.TechDone => Ui.Science,
@@ -328,7 +343,7 @@ public partial class GameScreen : Control
                 case EventKind.TechDone: Sound.Play(Sfx.Id.Tech); break;
                 case EventKind.BuildDone: Sound.Play(Sfx.Id.Build); break;
                 case EventKind.CityFounded or EventKind.CityCaptured or EventKind.Congress: Sound.Play(Sfx.Id.City); break;
-                case EventKind.Protest or EventKind.Secession or EventKind.WarDeclared or EventKind.Bankrupt: Sound.Play(Sfx.Id.Error); break;
+                case EventKind.WarDeclared or EventKind.Bankrupt: Sound.Play(Sfx.Id.Error); break;
             }
         }
         if (d.TimerLeft >= 0) { _timerBase = d.TimerLeft; _timerShownAt = Time.GetTicksMsec() / 1000.0; }
@@ -431,7 +446,7 @@ public partial class GameScreen : Control
             case Key.B: UnitCommand(CmdType.FoundCity); break;
             case Key.F: UnitCommand(CmdType.Fortify); break;
             case Key.C: if (Selected is { } s) Map.CenterOn(s.Tile); break;
-            case Key.T: _chat.Visible = true; _chat.GrabFocus(); break;
+            case Key.T: SetChatOpen(true, focus: true); break;
             case Key.M:
                 Sound.Muted = !Sound.Muted;
                 _main.SaveSetting("mute", Sound.Muted ? "1" : "0");
@@ -443,7 +458,7 @@ public partial class GameScreen : Control
             case Key.F9: Toggle(Win.Demographics); break;
             case Key.F7: Toggle(Win.Civics); break;
             case Key.F8: Toggle(Win.Religion); break;
-            case Key.F10: Toggle(Win.Branches); break;
+            case Key.F10: if (HasBranchAdvisor) Toggle(Win.Branches); break;
             case Key.F12: _diagnostics.Visible = !_diagnostics.Visible; break;
             case Key.P: UnitCommand(CmdType.Preach); break;
             default: return;
@@ -523,6 +538,7 @@ public partial class GameScreen : Control
             _advancePending = aim.caster != 0;
             return;
         }
+        if (CityFocused && TryCitizenClick(tile)) return;
         _confirmDisband = -1;
         var own = W.UnitsAt(tile).Where(u => u.Owner == W.MyId).OrderBy(u => u.Id).ToList();
         var city = W.CityAt(tile);
@@ -544,6 +560,11 @@ public partial class GameScreen : Control
     {
         if (_aiming != null) return false;
         int unitId = Banners.UnitAt(at);
+        if (unitId >= 0 && W.Units.TryGetValue(unitId, out var representative) && Banners.IsGroupAt(at, unitId))
+        {
+            OpenArmyStack(representative);
+            return true;
+        }
         if (unitId >= 0 && W.Units.TryGetValue(unitId, out var unit) && unit.Owner == W.MyId)
         {
             _confirmDisband = -1;
@@ -575,6 +596,19 @@ public partial class GameScreen : Control
         if (tile < 0 || Selected is not { } u || u.Owner != W.MyId) return;
         if (_aiming != null) { StopAiming("Отменено"); return; }
         if (!W.MyTurn) { Toast("Сейчас не ваш ход", true); return; }
+        var batch = _splitUnitIds.Where(id => W.Units.TryGetValue(id, out var other)
+            && other.Owner == W.MyId && other.Tile == _splitTile).ToArray();
+        ClearStackOrders();
+        if (batch.Length != 0)
+        {
+            foreach (int id in batch) OrderUnit(W.Units[id], tile);
+            return;
+        }
+        OrderUnit(u, tile);
+    }
+
+    private void OrderUnit(UnitDto u, int tile)
+    {
         if (u.Def.X.Ranged > 0 && W.Grid.Distance(u.Tile, tile) <= u.Def.X.Ranged
             && W.UnitsAt(tile).Any(o => o.Owner != W.MyId && W.Players.TryGetValue(o.Owner, out var foe) && foe.AtWar))
         {

@@ -113,6 +113,7 @@ public sealed partial class Game
     private void GlobalEnd()
     {
         S.Turn++;
+        TickWeather();
         if (S.Turn % Rules.CongressPeriod == 0)
         {
             // world congress: whoever received the most favor chairs it until the next session
@@ -136,6 +137,8 @@ public sealed partial class Game
         RecomputeBorders();
         SpreadReligion();
         TickContracts();
+        // Settle friendship together for both participants, regardless of who ended their turn first.
+        foreach (var p in Active) p.Favor += FriendsOf(p).Count();
         foreach (var p in Active) RefreshEconomy(p);
         AntiSnowball.Recompute(this);
         foreach (var p in Active) RefreshEconomy(p);
@@ -149,16 +152,24 @@ public sealed partial class Game
         var cities = CitiesOf(p.Id).OrderBy(c => c.Id).ToList();
         var capital = cities.FirstOrDefault(c => c.Capital);
         var taken = new HashSet<int>();
+        p.HousingCapacity = cities.Sum(CityHousingCapacity);
+        p.HousingUsed = cities.Sum(c => c.Pop) + UnitsOf(p.Id).Count(u => Rules.IsStacked(u.Def));
         double sci = 0, gold = 0, bUp = 0, maint = 0;
         var cand = new List<(int tile, int score, int f, int pr, int co)>();
 
         // connected resources: improved inside the borders, or lying under a city
         var connected = new SortedSet<int>();
         int roads = 0;
+        p.HasLumberMill = p.HasQuarry = false;
         for (int i = 0; i < S.Tiles.Length; i++)
         {
             var t = S.Tiles[i];
             if (t.Owner != p.Id) continue;
+            if (t.FireTurns == 0)
+            {
+                p.HasLumberMill |= t.Improvement == Improvement.LumberMill;
+                p.HasQuarry |= t.Improvement == Improvement.Quarry;
+            }
             if (t.Road && t.CityId < 0) roads++;
             if (t.Resource != Resource.None && (Rules.ResourceWorked(t) || t.CityId >= 0) && Rules.ResourceVisible(t.Resource, p.Has))
                 connected.Add((int)t.Resource);
@@ -189,16 +200,32 @@ public sealed partial class Game
         fx.Add(Rules.NodeBonus(p.Nodes)); // custom branches use the same kinds of bonus
         p.CivicFx = fx;
         var founded = FoundedBy(p.Id);
-        // branch power: from learned nodes everywhere, from buildings in orderly cities
+        // branch power comes from learned nodes and buildings in the player's cities
         var power = Rules.Branches.ToDictionary(b => b.Id, b => b.Nodes.Where(n => p.Nodes.Contains(n.Id)).Sum(n => n.Power)
             // ...and from the map: resources tied to the branch, once the branch is begun
             + (b.Nodes.Any(n => p.Nodes.Contains(n.Id)) ? b.PowerResources.Count(r => connected.Contains((int)Rules.ParseResource(r))) : 0));
+
+        var reserved = new Dictionary<int, int>();
+        foreach (var c in cities)
+        {
+            var belief = ReligionOf(c.Religion) is { } creed ? Rules.Beliefs[creed.Belief].Effect : null;
+            int comfort = 5 + p.Luxuries + p.TradeLuxuries + p.Future[Rules.BranchSocial] / 2 + fx.Happy + (belief?.Happy ?? 0)
+                + c.Buffs.Where(b => b.Stat == "Happy" && b.Until > S.Turn).Sum(b => b.Amount)
+                + c.Buildings.Sum(id => Rules.Building(id)?.Happy ?? 0);
+            c.Happy = Math.Max(0, comfort);
+            c.Unhappy = Math.Max(0, c.Pop - c.Happy);
+            int unassigned = c.Pop - c.Unhappy;
+            foreach (int tile in c.CitizenAssignments)
+            {
+                if (unassigned == 0) break;
+                if (CanWorkCityTile(p, c, tile) && reserved.TryAdd(tile, c.Id)) unassigned--;
+            }
+        }
 
         foreach (var c in cities)
         {
             // institutions apply everywhere, a belief only where the city follows its religion
             var bel = ReligionOf(c.Religion) is { } creed ? Rules.Beliefs[creed.Belief].Effect : null;
-            int happyCap = 5 + p.Luxuries + p.TradeLuxuries + p.Future[Rules.BranchSocial] / 2 + fx.Happy + (bel?.Happy ?? 0);
             int foodFlat = fx.Food + (bel?.Food ?? 0), comFlat = 0, culFlat = 1 + fx.Culture + (bel?.Culture ?? 0);
             double prodPct = fx.ProdPct + (bel?.ProdPct ?? 0), sciPct = fx.SciPct + (bel?.SciPct ?? 0), goldPct = fx.GoldPct + (bel?.GoldPct ?? 0);
             double culPct = fx.CulPct + (bel?.CulPct ?? 0), maintCut = 0, upkeep = 0, cityFaith = 0, foodPct = 0;
@@ -221,37 +248,35 @@ public sealed partial class Game
             {
                 var b = Rules.Building(id);
                 if (b == null) continue;
-                happyCap += b.Happy; foodFlat += b.Food; comFlat += b.Commerce; culFlat += b.Culture;
+                foodFlat += b.Food; comFlat += b.Commerce; culFlat += b.Culture;
                 prodPct += b.ProdPct; sciPct += b.SciPct; goldPct += b.GoldPct; culPct += b.CulPct;
                 maintCut = Math.Max(maintCut, b.MaintCutPct); upkeep += b.Upkeep;
-                if (c.DisorderTurns == 0) cityFaith += b.Faith;
+                cityFaith += b.Faith;
                 if (b.With.Length > 0 && b.With.Any(r => connected.Contains((int)r)))
                 {
                     // the building makes more of a resource the empire actually has
                     foodFlat += b.WithFood; prodPct += b.WithProdPct; goldPct += b.WithGoldPct;
-                    if (c.DisorderTurns == 0) cityFaith += b.WithFaith;
+                    cityFaith += b.WithFaith;
                 }
-                if (c.DisorderTurns == 0 && b.X.Power > 0 && Rules.BranchOfBuilding(b.Id) is { } owner)
+                if (b.X.Power > 0 && Rules.BranchOfBuilding(b.Id) is { } owner)
                     power[owner.Id] = power.GetValueOrDefault(owner.Id) + b.X.Power;
             }
-            c.Happy = happyCap;
-            c.Unhappy = Math.Min(c.Pop, Math.Max(0, c.Pop - happyCap) + Math.Min(2, c.Unrest / 40));
             int workers = c.Pop - c.Unhappy;
 
             cand.Clear();
             foreach (int t in Grid.Range(c.Tile, Rules.CityWorkRadius))
             {
-                var tile = S.Tiles[t];
-                if (t == c.Tile || tile.Owner != p.Id || tile.CityId >= 0 || taken.Contains(t)) continue;
-                var here = At(t);
-                bool blocked = false;
-                for (int i = 0; i < here.Count; i++) if (here[i].Owner != p.Id && AtWar(p.Id, here[i].Owner)) { blocked = true; break; }
-                if (blocked) continue;
-                var (tf, tp, tc) = Rules.TileYield(Seen(p, tile)); // an unrevealed strategic resource yields nothing yet
-                if (tf + tp + tc == 0) continue;
+                if (taken.Contains(t) || reserved.TryGetValue(t, out int other) && other != c.Id || !CanWorkCityTile(p, c, t)) continue;
+                var (tf, tp, tc) = Rules.TileYield(Seen(p, S.Tiles[t]));
                 cand.Add((t, tf * 4 + tp * 3 + tc * 2, tf, tp, tc));
             }
-            cand.Sort((a, b) => b.score != a.score ? b.score.CompareTo(a.score) : a.tile.CompareTo(b.tile));
+            cand.Sort((a, b) =>
+            {
+                int aPin = c.CitizenAssignments.IndexOf(a.tile), bPin = c.CitizenAssignments.IndexOf(b.tile);
+                if (aPin != bPin)
+                    return (aPin < 0 ? int.MaxValue : aPin).CompareTo(bPin < 0 ? int.MaxValue : bPin);
+                return b.score != a.score ? b.score.CompareTo(a.score) : a.tile.CompareTo(b.tile);
+            });
 
             var (f, pr, co) = Rules.TileYield(Seen(p, S.Tiles[c.Tile]), true);
             c.Worked.Clear();
@@ -263,23 +288,16 @@ public sealed partial class Game
             f += foodFlat; co += comFlat + workers; // every working citizen also trades
             if (foodPct != 0) f = (int)(f * (1 + foodPct / 100.0));
 
-            if (c.DisorderTurns > 0)
-            {
-                c.FoodRate = 0; c.ProdRate = 0; c.Commerce = 0; c.SciRate = 0; c.GoldRate = 0; c.CulRate = 0;
-            }
-            else
-            {
-                c.FoodRate = f - 2 * c.Pop;
-                c.ProdRate = (int)(pr * p.Bonus * (1 + prodPct / 100 + 0.05 * p.Future[Rules.BranchNano]));
-                co = (int)Math.Round(co * p.Bonus);
-                c.Commerce = co;
-                double s = co * p.Slider / 100.0;
-                c.SciRate = s * (1 + sciPct / 100 + 0.05 * p.Future[Rules.BranchQuantum]) * p.SciMult;
-                c.GoldRate = (co - s) * (1 + goldPct / 100 + 0.05 * p.Future[Rules.BranchSpace]);
-                c.CulRate = culFlat * (1 + culPct / 100 + 0.05 * p.Future[Rules.BranchSocial]) * p.CulMult;
-                if (c.Queue.Count > 0 && c.Queue[0] == Rules.Wealth) c.GoldRate += c.ProdRate;
-                if (chair) { c.GoldRate *= 1.1; c.CulRate *= 1.1; } // chair of the world congress
-            }
+            c.FoodRate = f - 2 * c.Pop;
+            c.ProdRate = (int)(pr * p.Bonus * (1 + prodPct / 100 + 0.05 * p.Future[Rules.BranchNano]));
+            co = (int)Math.Round(co * p.Bonus);
+            c.Commerce = co;
+            double s = co * p.Slider / 100.0;
+            c.SciRate = s * (1 + sciPct / 100 + 0.05 * p.Future[Rules.BranchQuantum]) * p.SciMult;
+            c.GoldRate = (co - s) * (1 + goldPct / 100 + 0.05 * p.Future[Rules.BranchSpace]);
+            c.CulRate = culFlat * (1 + culPct / 100 + 0.05 * p.Future[Rules.BranchSocial]) * p.CulMult;
+            if (c.Queue.Count > 0 && c.Queue[0] == Rules.Wealth) c.GoldRate += c.ProdRate;
+            if (chair) { c.GoldRate *= 1.1; c.CulRate *= 1.1; } // chair of the world congress
             int dist = capital == null ? 0 : Grid.Distance(capital.Tile, c.Tile);
             c.Maint = c.Capital ? 0 : (0.5 + dist / 8.0 + 0.25 * (cities.Count - 1)) * (1 - maintCut / 100);
             c.BuildingUpkeep = upkeep;
@@ -308,14 +326,7 @@ public sealed partial class Game
         p.StrainCost = baseCost * (p.UpkeepMult - 1);
         p.FaithRate = faith;
         p.PowerRate = power;
-        int partners = 0; bool atWar = false;
-        foreach (var o in Active)
-        {
-            if (o.Id == p.Id) continue;
-            var rel = Rel(p.Id, o.Id);
-            if (rel.AtWar) atWar = true; else if (rel.OpenBorders) partners++;
-        }
-        p.FavorRate = 1 + partners + (atWar ? 0 : 1) + fx.Favor + p.Brethren; // co-religionists speak well of each other
+        p.FavorRate = FriendsOf(p).Count() + fx.Favor;
         foreach (var b in Rules.Branches)
             p.BranchRate[b.Id] = BranchUnlocked(p, b) ? b.FromScience * sci + b.FromCulture * culture + b.FromFaith * faith : 0;
         p.EchoBonus = AntiSnowball.Echo(this, p);
@@ -332,10 +343,7 @@ public sealed partial class Game
             {
                 ref var t = ref S.Tiles[u.Tile];
                 if (Rules.WorkFits(Seen(p, t), u.Work))
-                {
-                    if (u.Work == WorkKind.Road) t.Road = true;
-                    else t.Improvement = (Improvement)(int)u.Work;
-                }
+                    t = Rules.AfterWork(t, u.Work);
                 u.Work = WorkKind.None; u.WorkTurns = 0;
             }
             if (u.Def.X.Regen > 0) u.Hp = Math.Min(100, u.Hp + u.Def.X.Regen);
@@ -348,22 +356,19 @@ public sealed partial class Game
 
         ProcessBranchEffects(p);
 
-        var capital = CitiesOf(p.Id).FirstOrDefault(c => c.Capital);
-        int cityCount = CitiesOf(p.Id).Count();
         foreach (var c in CitiesOf(p.Id).OrderBy(c => c.Id).ToList())
         {
             if (c.Owner != p.Id) continue;
-            if (c.DisorderTurns > 0) c.DisorderTurns--;
-            else
+            c.Food += c.FoodRate;
+            int need = Rules.FoodToGrow(c.Pop);
+            if (c.Food >= need)
             {
-                c.Food += c.FoodRate;
-                int need = Rules.FoodToGrow(c.Pop);
-                if (c.Food >= need) { c.Pop++; c.Food -= need; }
-                else if (c.Food < 0) { if (c.Pop > 1) c.Pop--; c.Food = 0; }
-                ProcessProduction(p, c);
-                c.Culture += Math.Max(1, (int)Math.Round(c.CulRate));
+                if (CanGrow(p, c)) { c.Pop++; c.Food -= need; }
+                else c.Food = need;
             }
-            ProcessUnrest(p, c, capital, cityCount);
+            else if (c.Food < 0) { if (c.Pop > 1) c.Pop--; c.Food = 0; }
+            ProcessProduction(p, c);
+            c.Culture += Math.Max(1, (int)Math.Round(c.CulRate));
         }
 
         double sci = p.SciRate + p.EchoBonus + p.SciFrac;
@@ -416,7 +421,7 @@ public sealed partial class Game
                 Emit(EventKind.CivicDone, s: civic.Id, only: p.Id);
             }
         }
-        p.Favor += (int)p.FavorRate;
+        p.Favor += p.CivicFx.Favor;
         p.Gold += p.GoldRate;
         if (p.Gold < 0)
         {
@@ -493,7 +498,7 @@ public sealed partial class Game
                     foreach (int t in Grid.Range(c.Tile, 1))
                         foreach (var f in At(t))
                             if (f.Owner == p.Id && f.Hp < 100) f.Hp = Math.Min(100, f.Hp + x.UnitHeal);
-                if (x.Bombard > 0 && c.DisorderTurns == 0)
+                if (x.Bombard > 0)
                 {
                     var target = S.Units.Values
                         .Where(e => e.Owner != p.Id && AtWar(p.Id, e.Owner) && Grid.Distance(c.Tile, e.Tile) <= Math.Max(1, x.BombardRange))
@@ -534,9 +539,9 @@ public sealed partial class Game
         if (c.Queue.Count == 0) { c.Prod = Math.Min(c.Prod + c.ProdRate, 60); return; }
         string item = c.Queue[0];
         if (item == Rules.Wealth) return; // already converted to gold in RefreshEconomy
-        if (!CanBuild(p, c, item)) { c.Queue.RemoveAt(0); return; }
-        c.Prod += c.ProdRate;
-        int cost = Rules.ItemCost(item);
+        if (!CanBuild(p, c, item)) return;
+        c.Prod += c.ProdRate * (item == "h:wood" && ActiveImprovement(p, Improvement.LumberMill) ? 2 : 1);
+        int cost = CityProjectCost(item);
         if (c.Prod < cost) return;
         int type = item.StartsWith("u:") ? Rules.UnitIndex(item[2..]) : -1;
         if (type >= 0 && UnitProductionError(p, c, type) != null)
@@ -544,60 +549,17 @@ public sealed partial class Game
             c.Prod = cost;
             return;
         }
-        CompleteProduction(p, c, item, cost, type);
+        c.Prod -= cost;
+        c.Queue.RemoveAt(0);
+        DeliverProject(p, c, item, type);
     }
 
     private string? UnitProductionError(Player p, City c, int type)
     {
-        if (!HasUnitSpace(p.Id, c.Tile)) return "В городе нет места для нового юнита";
+        if (!HasUnitSpace(p.Id, c.Tile, type)) return "В городе нет места для нового юнита";
+        if (Rules.IsStacked(Rules.Units[type]) && !HasRecruitHousing(p)) return "В державе нет свободного жилья";
         if (Rules.Units[type].Role == UnitRole.Settler && c.Pop < 2) return "Для поселенца нужно население не меньше 2";
         return null;
     }
 
-    private void CompleteProduction(Player p, City c, string item, int cost, int type)
-    {
-        if (type >= 0)
-        {
-            if (Rules.Units[type].Role == UnitRole.Settler) c.Pop--;
-            AddUnit(p.Id, type, c.Tile).Moves = 0;
-        }
-        else c.Buildings.Add(item[2..]);
-        c.Prod -= cost;
-        c.Queue.RemoveAt(0);
-        Emit(EventKind.BuildDone, c.Id, s: item, only: p.Id);
-        if (c.Queue.Count == 0) Emit(EventKind.IdleCity, c.Id, s: c.Name, only: p.Id);
-    }
-
-    /// <summary>"Social unrest": cities of a runaway leader accumulate unrest, leading to protests and separatism.</summary>
-    private void ProcessUnrest(Player p, City c, City? capital, int cityCount)
-    {
-        int dist = capital == null ? 0 : Grid.Distance(capital.Tile, c.Tile);
-        double calm = 3 + p.Future[Rules.BranchSocial] + p.CivicFx.Calm + (ReligionOf(c.Religion) is { } creed ? Rules.Beliefs[creed.Belief].Effect.Calm : 0);
-        foreach (var id in c.Buildings) calm += Rules.Building(id)?.Calm ?? 0;
-        int state = capital?.Religion ?? 0;
-        if (state != 0 && c.Religion == state) calm += 1;              // one faith with the capital steadies a city
-        double pressure = Bal.UnrestPerPressure * p.Pressure * (0.6 + dist / 8.0) + Math.Max(0, c.Pop - c.Happy);
-        if (state != 0 && c.Religion != 0 && c.Religion != state) pressure += 2;   // religious strife
-        pressure += p.WarWeariness;                                      // every long war wears the people down
-        c.Unrest = (int)Math.Clamp(c.Unrest + pressure - calm, 0, 100);
-        if (c.Unrest < 100 || c.DisorderTurns > 0) return;
-
-        bool secede = !c.Capital && cityCount >= 3 && p.Pressure >= Bal.SecessionPressure
-            && dist >= Bal.SecessionMinDistance && Rand(100) < Bal.SecessionChancePct;
-        if (secede)
-        {
-            int best = 3;
-            for (int i = 0; i < Rules.Units.Length; i++)
-                if (Rules.Units[i].Role == UnitRole.Military && p.Has(Rules.Units[i].Tech) && Rules.Units[i].Str > Rules.Units[best].Str) best = i;
-            TransferCity(c, Neutral.Id, false);
-            for (int i = 0; i < 2 && HasUnitSpace(Neutral.Id, c.Tile); i++)
-                AddUnit(Neutral.Id, best, c.Tile).Fortified = true;
-        }
-        else
-        {
-            c.DisorderTurns = 3;
-            c.Unrest = 60;
-            Emit(EventKind.Protest, c.Id, s: c.Name, only: p.Id);
-        }
-    }
 }

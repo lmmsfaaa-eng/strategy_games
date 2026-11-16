@@ -51,6 +51,7 @@ public sealed class GameSession
         if (save.State.Units.Values.Any(u => (uint)u.Type >= Rules.Units.Length))
             throw new InvalidDataException("В сохранении есть юнит из отсутствующего мода. Верните прежний файл мода и откройте сохранение снова.");
         Game = new Game(save.State);
+        EnsurePrivateWeatherSeed(Game.S);
         long now = server.Now;
         foreach (var s in save.Slots)
         {
@@ -62,6 +63,12 @@ public sealed class GameSession
     }
 
     public bool Started => Game != null;
+
+    private static void EnsurePrivateWeatherSeed(GameState state)
+    {
+        // The map seed is public. A hosted game's future hidden weather uses a separate saved seed.
+        if (state.WeatherSeed == 0) state.WeatherSeed = (ulong)Random.Shared.NextInt64(1, long.MaxValue);
+    }
 
     private void ActivateMods()
     {
@@ -164,6 +171,7 @@ public sealed class GameSession
         ActivateMods();
         try { Game = Game.Create(Settings, players, _server.Options.Balance); }
         catch (Exception ex) { return ex.Message; }
+        EnsurePrivateWeatherSeed(Game.S);
         _server.Log($"* Игра #{Id} «{Settings.Name}» началась: {Slots.Count} игрок(ов), {Settings.AiCount} ИИ, карта {Settings.MapW}x{Settings.MapH}, seed {Settings.Seed}");
         for (int i = 0; i < Slots.Count; i++)
         {

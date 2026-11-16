@@ -20,7 +20,7 @@ public sealed partial class Game
             var here = _at[t];
             if (here == null) continue;
             indexed += here.Count;
-            if (here.Count > Rules.MaxUnitsPerTile) Fail($"на клетке {t} больше {Rules.MaxUnitsPerTile} юнитов");
+            if (CivilianCount(t) > Rules.MaxCiviliansPerTile) Fail($"на клетке {t} больше {Rules.MaxCiviliansPerTile} гражданских юнитов");
             foreach (var u in here) if (u.Tile != t) Fail($"юнит {u.Id} числится на клетке {t}, а стоит на {u.Tile}");
             if (here.Select(u => u.Owner).Distinct().Count() > 1) Fail($"на клетке {t} юниты разных владельцев");
         }
@@ -62,7 +62,7 @@ public sealed partial class Game
             if (S.Tiles[c.Tile].Owner != c.Owner) Fail($"город {c.Name}: клетка города принадлежит {S.Tiles[c.Tile].Owner}, а город — {c.Owner}");
             if (c.Pop < 1) Fail($"город {c.Name}: население {c.Pop}");
             if (c.Food < 0 || c.Prod < 0 || c.Culture < 0) Fail($"город {c.Name}: отрицательные запасы");
-            if (c.Unrest < 0 || c.Unrest > 100) Fail($"город {c.Name}: брожение {c.Unrest}");
+            if (c.Houses.Any(h => !Enum.IsDefined(h.Key) || h.Value <= 0)) Fail($"город {c.Name}: неверный учёт домов");
             var owner = P(c.Owner);
             if (!owner.Alive && !owner.Neutral) Fail($"город {c.Name} принадлежит выбывшему игроку");
             foreach (int w in c.Worked)

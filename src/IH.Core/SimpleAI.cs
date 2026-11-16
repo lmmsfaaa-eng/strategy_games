@@ -157,7 +157,7 @@ public static class SimpleAI
                     {
                         DealKind.GoldPerTurn => (long)clause.Value * turns,
                         DealKind.Resource => (!receiving || !ai.HasResource((Resource)clause.Value)) ? 3L * turns : 0,
-                        DealKind.Passage or DealKind.Statistics => turns,
+                        DealKind.Passage or DealKind.Statistics or DealKind.NonAggression => turns,
                         _ => 0,
                     };
                 });
@@ -201,13 +201,20 @@ public static class SimpleAI
                 if (g.S.Turn - rel.SinceTurn >= 12 && (mine < g.Power(q.Id) * 1.2 || g.Rand(100) < 15))
                     Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.Peace);
             }
-            else if (!rel.Allied && g.S.Turn > 40 && g.S.Turn % 8 == p.Id % 8 && g.S.Turn - rel.SinceTurn > 20
+            else if (!g.Allied(p.Id, q.Id) && !g.GuaranteesNonAggression(p.Id, q.Id)
+                     && g.S.Turn > 40 && g.S.Turn % 8 == p.Id % 8 && g.S.Turn - rel.SinceTurn > 20
                      && mine > 1.7 * Math.Max(4, g.Power(q.Id)) && g.Rand(100) < 20)
                 Do(g, p, CmdType.DeclareWar, q.Id);
             else if (!rel.OpenBorders && g.Rand(100) < 4)
                 Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.OpenBorders);
             else if (!rel.Allied && rel.OpenBorders && g.S.Turn > 35 && g.S.Turn % 16 == (p.Id + q.Id) % 16)
                 Do(g, p, CmdType.Propose, q.Id, (int)ProposalKind.Alliance);
+            else if (!rel.Friendly && rel.OpenBorders && !p.Embargoes.Contains(q.Id) && !q.Embargoes.Contains(p.Id)
+                     && g.S.Turn % 17 == (p.Id + q.Id) % 17)
+            {
+                var friendship = new TradeSide { Clauses = new[] { new DealClause { Kind = (byte)DealKind.Friendship, Value = 1 } } };
+                Do(g, p, CmdType.OfferContract, q.Id, s: TradeTerms.Encode(friendship, friendship));
+            }
             else if (rel.OpenBorders && !p.Embargoes.Contains(q.Id) && !q.Embargoes.Contains(p.Id)
                 && g.S.Turn % 19 == (p.Id * 3 + q.Id) % 19)
             {
@@ -246,7 +253,18 @@ public static class SimpleAI
 
         foreach (var c in cities)
         {
-            if (c.Queue.Count > 0 && c.Queue[0] != Rules.Wealth) continue;
+            bool hasRecruitHousing = g.HasRecruitHousing(p);
+            string? current = c.Queue.FirstOrDefault();
+            bool blockedRecruitment = !hasRecruitHousing && current?.StartsWith("u:", StringComparison.Ordinal) == true
+                && Rules.UnitIndex(current[2..]) is int queued && queued >= 0 && Rules.IsStacked(Rules.Units[queued]);
+            if (current != null && current != Rules.Wealth && !blockedRecruitment) continue;
+            if (!g.CanGrow(p, c) && Housing.Materials.Where(h => g.CanBuild(p, c, h.Item))
+                    .OrderBy(h => h.Cost).FirstOrDefault() is { } house)
+            {
+                Do(g, p, CmdType.SetProduction, c.Id, 0, 0, house.Item);
+                continue;
+            }
+            if (blockedRecruitment) continue;
             string item;
             int defenders = g.At(c.Tile).Count(g.IsMilitary);
             var building = Rules.Buildings
@@ -257,16 +275,16 @@ public static class SimpleAI
             // one fishing boat per coastal city that has an unworked sea resource
             bool wantBoat = p.Has("sailing") && g.Coastal(c) && boats < cities.Count(g.Coastal)
                 && g.Grid.Range(c.Tile, Rules.CityWorkRadius).Any(t => g.S.Tiles[t].IsWater && g.S.Tiles[t].Owner == p.Id && JobFor(g, p, g.S.Tiles[t], t) != WorkKind.None);
-            if (defenders == 0) item = soldier;
+            if (defenders == 0 && hasRecruitHousing) item = soldier;
             else if (wantBoat) { item = "u:work_boat"; boats++; }
             else if (money != null) item = "b:" + money.Id;
             else if (broke && !war) item = Rules.Wealth;
             else if (cities.Count + settlers < target && c.Pop >= 2 && BestSite(g, p, c.Tile, 8).tile >= 0) { item = "u:settler"; settlers++; }
             else if (workers < Math.Min(cities.Count, 6)) { item = "u:worker"; workers++; }
             else if (Specialist(g, p, c, units) is { } special) item = special;
-            else if (military < cities.Count * (war ? 4 : 2) && (building == null || (c.Id + g.S.Turn) % 2 == 0)) { item = soldier; military++; }
+            else if (hasRecruitHousing && military < cities.Count * (war ? 4 : 2) && (building == null || (c.Id + g.S.Turn) % 2 == 0)) { item = soldier; military++; }
             else if (building != null) item = "b:" + building.Id;
-            else if (military < cities.Count * (war ? 5 : 3)) { item = soldier; military++; }
+            else if (hasRecruitHousing && military < cities.Count * (war ? 5 : 3)) { item = soldier; military++; }
             else item = Rules.Wealth;
             if (c.Queue.Count == 0 || c.Queue[0] != item) Do(g, p, CmdType.SetProduction, c.Id, 0, 0, item);
         }
@@ -327,6 +345,12 @@ public static class SimpleAI
             return Rules.WorkFits(t, need) && p.Has(Rules.WorkTech(need)) ? need : WorkKind.None;
         }
         if (t.Improvement != Improvement.None || t.IsWater) return WorkKind.None;
+        if (Rules.WorkFits(t, WorkKind.LumberMill) && p.Has(Rules.WorkTech(WorkKind.LumberMill))
+            && !g.S.Tiles.Any(land => land.Owner == p.Id && land.Improvement == Improvement.LumberMill)
+            && !g.UnitsOf(p.Id).Any(u => u.Work == WorkKind.LumberMill)) return WorkKind.LumberMill;
+        if (Rules.WorkFits(t, WorkKind.Quarry) && p.Has(Rules.WorkTech(WorkKind.Quarry))
+            && !g.S.Tiles.Any(land => land.Owner == p.Id && land.Improvement == Improvement.Quarry)
+            && !g.UnitsOf(p.Id).Any(u => u.Work == WorkKind.Quarry)) return WorkKind.Quarry;
         if (Rules.WorkFits(t, WorkKind.Mine) && p.Has("mining")) return WorkKind.Mine;
         bool wantFarm = tile % 3 != 0;
         if (wantFarm && Rules.WorkFits(t, WorkKind.Farm) && p.Has("agriculture")) return WorkKind.Farm;
@@ -397,7 +421,8 @@ public static class SimpleAI
                     break;
                 case "Summon":
                     if (!g.S.Units.Values.Any(e => enemies.Contains(e.Owner) && grid.Distance(e.Tile, u.Tile) <= 4)) continue;
-                    target = grid.Range(u.Tile, range).Where(t => g.S.Tiles[t].Passable && g.CityAt(t) == null && g.HasUnitSpace(p.Id, t))
+                    int summonType = Rules.UnitIndex(a.Unit);
+                    target = grid.Range(u.Tile, range).Where(t => g.CityAt(t) == null && g.CanSpawnUnit(p.Id, summonType, t))
                         .DefaultIfEmpty(-1).First();
                     if (target < 0) continue;
                     break;

@@ -13,7 +13,7 @@ public partial class CityBanners : Control
 {
     private readonly GameScreen _screen;
     private readonly List<(Rect2 rect, int city)> _hit = new();
-    private readonly List<(Vector2 center, float radius, int id)> _unitHit = new();
+    private readonly List<(Vector2 center, float radius, int id, int count, Rect2 counter)> _unitHit = new();
     private readonly Dictionary<Vector2I, List<Rect2>> _occupied = new();
     private int _hoverUnit = -1;
     private string _signature = "";
@@ -38,10 +38,13 @@ public partial class CityBanners : Control
         for (int i = _unitHit.Count - 1; i >= 0; i--)
         {
             var hit = _unitHit[i];
-            if (at.DistanceSquaredTo(hit.center) <= hit.radius * hit.radius) return hit.id;
+            if (at.DistanceSquaredTo(hit.center) <= hit.radius * hit.radius || hit.count > 1 && hit.counter.HasPoint(at)) return hit.id;
         }
         return -1;
     }
+
+    public bool IsGroupAt(Vector2 at, int unitId) => _unitHit.Any(hit => hit.id == unitId && hit.count > 1
+        && (at.DistanceSquaredTo(hit.center) <= hit.radius * hit.radius || hit.counter.HasPoint(at)));
 
     public override void _Process(double delta)
     {
@@ -85,7 +88,7 @@ public partial class CityBanners : Control
             if (w.Vis[c.Tile] == 1) color = color.Darkened(0.3f);
 
             // the plate: dark pill with the owner's colour as a border and as the population cap
-            var bg = Ui.Box(c.Disorder ? Ui.Col(0x3A141A, 0.95f) : Ui.Col(0x0B101C, 0.9f), c.Disorder ? Ui.Bad : color, (int)(h / 2), 0, 0, mine ? 2 : 1);
+            var bg = Ui.Box(Ui.Col(0x0B101C, 0.9f), color, (int)(h / 2), 0, 0, mine ? 2 : 1);
             DrawStyleBox(bg, rect);
             var cap = Ui.Box(color, null, (int)(h / 2), 0, 0);
             cap.CornerRadiusTopRight = cap.CornerRadiusBottomRight = 3;
@@ -96,7 +99,7 @@ public partial class CityBanners : Control
                 color.Luminance > 0.55f ? new Color(0.06f, 0.08f, 0.12f) : Colors.White);
             float x = rect.Position.X + popW + 7;
             if (c.Capital) { Icon.Paint(this, Ico.Star, new Rect2(x, rect.Position.Y + (h - fs) / 2, fs, fs), Ui.Gold); x += star; }
-            DrawString(font, new Vector2(x, baseline), c.Name, HorizontalAlignment.Left, -1, fs, c.Disorder ? Ui.Col(0xFFB3AC) : Ui.Text);
+            DrawString(font, new Vector2(x, baseline), c.Name, HorizontalAlignment.Left, -1, fs, Ui.Text);
             x += nameW;
             if (faith) { x += 4; Icon.Paint(this, Ico.Faith, new Rect2(x, rect.Position.Y + (h - fs + 2) / 2, fs - 2, fs - 2), Ui.Faith); x += rel; }
             if (guardW > 0)
@@ -120,7 +123,7 @@ public partial class CityBanners : Control
             DrawRect(new Rect2(bx, by, bw, 3), Ui.Col(0x0B101C, 0.85f));
             if (cost > 0) DrawRect(new Rect2(bx, by, bw * Mathf.Clamp(d.Prod / (float)cost, 0, 1), 3), Ui.Prod);
             if (lod < 2) continue;
-            string what = d.DisorderTurns > 0 ? $"беспорядки: {d.DisorderTurns} х." : item.Length == 0 ? "простаивает"
+            string what = item.Length == 0 ? "простаивает"
                 : item == Rules.Wealth ? "богатство" : $"{Rules.ItemName(item)} · {(d.ProdRate > 0 ? Math.Max(1, (cost - d.Prod + d.ProdRate - 1) / d.ProdRate) + " х." : "∞")}";
             var plain = ThemeDB.FallbackFont;
             float ww = plain.GetStringSize(what, HorizontalAlignment.Left, -1, 11).X;
@@ -128,7 +131,7 @@ public partial class CityBanners : Control
             Reserve(tag.Grow(2));
             DrawStyleBox(Ui.Box(Ui.Col(0x0B101C, 0.78f), null, 8, 0, 0), tag);
             DrawString(plain, new Vector2(tag.Position.X + 6, tag.Position.Y + 12), what, HorizontalAlignment.Left, -1, 11,
-                d.DisorderTurns > 0 || item.Length == 0 ? Ui.Col(0xFF9C92) : Ui.Col(0xC8D0E0));
+                item.Length == 0 ? Ui.Col(0xFF9C92) : Ui.Col(0xC8D0E0));
         }
         DrawUnits(map);
         DrawRouteArrival(map);
@@ -184,45 +187,52 @@ public partial class CityBanners : Control
         }
 
         float radius = map.Lod switch { 0 => 9f, 1 => 11f, _ => 13f };
-        float spacing = 2f * radius + 3f;
         foreach (var formation in formations.OrderByDescending(g => g.members.Any(x => x.unit.Id == map.SelectedUnit))
                      .ThenByDescending(g => g.members[0].unit.Owner == w.MyId).ThenBy(g => g.tile))
         {
             var members = formation.members;
+            var counts = members.Select(x => Math.Max(1, map.DisplayedArmy(x.unit.Id).Count)).ToArray();
+            float spacing = 2 * radius + 4;
+            float extra = counts.Max() > 1 ? CounterRect(Vector2.Zero, radius, counts.Max()).End.X - radius : 0;
             float top = members.Min(x => x.head.Y);
             float middle = members.Average(x => x.head.X);
             var positions = members.Select(x => x.head - Vector2.Down * (radius + 3f)).ToArray();
             if (members.Count == 2)
             {
-                float dx = Mathf.Max(spacing / 2f, Mathf.Abs(positions[0].X - positions[1].X) / 2f);
+                float dx = Mathf.Max((spacing + extra) / 2f, Mathf.Abs(positions[0].X - positions[1].X) / 2f);
                 positions[0] = new Vector2(middle - dx, top - radius - 3f);
                 positions[1] = new Vector2(middle + dx, top - radius - 3f);
             }
             else if (members.Count == 3)
             {
-                float dx = Mathf.Max(spacing / 2f, Mathf.Abs(positions[1].X - positions[2].X) / 2f);
+                float dx = Mathf.Max((spacing + extra) / 2f, Mathf.Abs(positions[1].X - positions[2].X) / 2f);
                 float y = Mathf.Min(members[1].head.Y, members[2].head.Y) - radius - 3f;
-                positions[0] = new Vector2(middle, Mathf.Min(positions[0].Y, y - spacing * 0.87f));
+                positions[0] = new Vector2(middle, Mathf.Min(positions[0].Y, y - spacing - (extra > 0 ? 7 : 0)));
                 positions[1] = new Vector2(middle - dx, y);
                 positions[2] = new Vector2(middle + dx, y);
             }
-
-            // Move the formation as a group so collision avoidance preserves its shape.
-            if (!FindBadgeOffset(positions, radius, out var offset)) continue;
+            else if (members.Count == 4)
+            {
+                float dx = (spacing + extra) / 2;
+                float y = top - radius - 3;
+                for (int i = 0; i < 4; i++)
+                    positions[i] = new Vector2(middle + (i % 2 == 0 ? -dx : dx), y + (i / 2) * (spacing + 7));
+            }
+            if (!FindBadgeOffset(positions, counts, radius, out var offset)) continue;
             for (int i = 0; i < members.Count; i++)
             {
                 var (unit, head) = members[i];
                 var at = positions[i] + offset;
-                Reserve(BadgeRect(at, radius));
-                DrawUnitBadge(unit, head, at, radius, unit.Id == map.SelectedUnit, map.OwnerColor(unit.Owner));
+                Reserve(BadgeBounds(at, radius, counts[i]));
+                DrawUnitBadge(unit, head, at, radius, counts[i], unit.Id == map.SelectedUnit, map.OwnerColor(unit.Owner));
             }
         }
 
         var mouse = GetLocalMousePosition();
         int hovered = UnitAt(mouse);
-        var hover = _unitHit.FindLast(x => x.id == hovered && x.center.DistanceSquaredTo(mouse) <= x.radius * x.radius);
+        var hover = _unitHit.FindLast(x => x.id == hovered && (x.center.DistanceSquaredTo(mouse) <= x.radius * x.radius || x.counter.HasPoint(mouse)));
         if (hovered < 0 || !w.Units.TryGetValue(hovered, out var data)) return;
-        string label = data.Hp < 100 ? $"{data.Def.Name} · {data.Hp}%" : data.Def.Name;
+        string label = hover.count > 1 ? $"Войска · {hover.count}" : data.Hp < 100 ? $"{data.Def.Name} · {data.Hp}%" : data.Def.Name;
         const int fs = 12;
         var font = ThemeDB.FallbackFont;
         float width = font.GetStringSize(label, HorizontalAlignment.Left, -1, fs).X + 14;
@@ -232,7 +242,7 @@ public partial class CityBanners : Control
         DrawString(font, pos + new Vector2(7, 15), label, HorizontalAlignment.Left, -1, fs, Colors.White);
     }
 
-    private void DrawUnitBadge(UnitDto unit, Vector2 head, Vector2 at, float r, bool selected, Color team)
+    private void DrawUnitBadge(UnitDto unit, Vector2 head, Vector2 at, float r, int count, bool selected, Color team)
     {
         var stem = head - at;
         if (stem.Length() > r + 4)
@@ -243,17 +253,32 @@ public partial class CityBanners : Control
         float side = r * 1.17f;
         var ink = unit.Owner == _screen.W.MyId && (unit.Moves == 0 || unit.Fortified || unit.Work != 0)
             ? Ui.Col(0xB5BCB1) : Ui.Col(0xFFFAE9);
-        Icon.Paint(this, GameScreen.UnitIcon(unit.Def), new Rect2(at - Vector2.One * side / 2, Vector2.One * side), ink);
-        if (unit.Hp < 100)
+        Icon.Paint(this, count > 1 ? Ico.Sword : GameScreen.UnitIcon(unit.Def), new Rect2(at - Vector2.One * side / 2, Vector2.One * side), ink);
+        if (count == 1 && unit.Hp < 100)
             DrawArc(at, r - 0.75f, Mathf.Pi * 0.2f, Mathf.Pi * (0.2f + 0.6f * (1 - unit.Hp / 100f)),
                 12, Ui.Bad, 2, true);
-        _unitHit.Add((at, r, unit.Id));
+        var counter = count > 1 ? CounterRect(at, r, count) : default;
+        if (count > 1)
+        {
+            DrawStyleBox(Ui.Box(Ui.Col(0x253936), team, 5, 0, 0), counter);
+            DrawString(Ui.Bold, counter.Position + new Vector2(4, 10), count.ToString(), HorizontalAlignment.Left, -1, 10, Ui.Text);
+        }
+        _unitHit.Add((at, r, unit.Id, count, counter));
     }
 
     private static Rect2 BadgeRect(Vector2 point, float radius) =>
         new(point - Vector2.One * (radius + 1), Vector2.One * (radius + 1) * 2);
 
-    private bool FindBadgeOffset(Vector2[] positions, float radius, out Vector2 result)
+    private static Rect2 CounterRect(Vector2 at, float radius, int count)
+    {
+        float width = Ui.Bold.GetStringSize(count.ToString(), HorizontalAlignment.Left, -1, 10).X + 8;
+        return new Rect2(at.X + radius * 0.54f, at.Y + radius * 0.55f, width, 13);
+    }
+
+    private static Rect2 BadgeBounds(Vector2 at, float radius, int count) => count > 1
+        ? BadgeRect(at, radius).Merge(CounterRect(at, radius, count)) : BadgeRect(at, radius);
+
+    private bool FindBadgeOffset(Vector2[] positions, int[] counts, float radius, out Vector2 result)
     {
         float step = radius * 1.25f;
         var viewport = new Rect2(Vector2.Zero, Size);
@@ -264,7 +289,8 @@ public partial class CityBanners : Control
             {
                 float angle = Mathf.Tau * p / points - Mathf.Pi / 2;
                 var shift = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * (ring * step);
-                if (!positions.All(at => viewport.Encloses(BadgeRect(at + shift, radius)) && !Blocked(BadgeRect(at + shift, radius)))) continue;
+                if (positions.Select((at, index) => BadgeBounds(at + shift, radius, counts[index]))
+                    .Any(bounds => !viewport.Encloses(bounds) || Blocked(bounds))) continue;
                 result = shift;
                 return true;
             }

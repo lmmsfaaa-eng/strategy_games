@@ -112,7 +112,7 @@ public class LinksTests
     }
 
     [Fact]
-    public void Long_wars_wear_cities_down()
+    public void Long_wars_report_weariness_without_halting_city_production()
     {
         var g = WithCities();
         var p = g.P(0); var city = g.CitiesOf(0).Single();
@@ -123,17 +123,15 @@ public class LinksTests
         g.RefreshEconomy(p);
         Assert.Equal(1, p.WarWeariness);
         Assert.Equal(1, g.BuildView(0).Me.WarWeariness);
-        // it shows up as unrest: remove everything that calms the city and watch it rise
-        city.Buildings.Clear(); city.Unrest = 0;
-        EndTurn(g);
-        int warUnrest = city.Unrest;
-        g.Rel(0, 1).AtWar = false; city.Unrest = 0;
-        EndTurn(g);
-        Assert.True(warUnrest > city.Unrest || warUnrest > 0 == false && city.Unrest == 0);
+        int duringWar = city.Happy;
+        Assert.True(city.ProdRate > 0);
+        g.Rel(0, 1).AtWar = false;
+        g.RefreshEconomy(p);
+        Assert.Equal(duringWar, city.Happy);
     }
 
     [Fact]
-    public void Shared_faith_binds_states_and_strife_divides_cities()
+    public void Shared_faith_binds_states_without_causing_city_disorder()
     {
         var g = WithCities();
         var p = g.P(0); var q = g.P(1);
@@ -148,7 +146,7 @@ public class LinksTests
         theirs.Religion = rel;                                     // the neighbour converts
         Assert.True(g.SameFaith(0, 1));
         g.RefreshEconomy(p);
-        Assert.Equal(favor + 1, p.FavorRate);
+        Assert.Equal(favor, p.FavorRate); // shared faith is separate from friendship
         Assert.Equal(1, g.BuildView(0).Me.Brethren);
         Assert.Equal(rel, g.BuildView(0).Me.StateReligion);
 
@@ -162,24 +160,24 @@ public class LinksTests
         q.IsAI = true;
         Assert.True(SimpleAI.Accepts(g, q, new Proposal { From = 0, To = 1, Kind = ProposalKind.OpenBorders }));
 
-        // inside the empire: a city of the state religion is calmer than one of another faith
+        // Inside the empire even a city with another religion still produces.
         var capital = g.CitiesOf(0).Single();
         int near = Enumerable.Range(0, g.Grid.Count).First(t => g.CanFoundAt(0, t) && g.Grid.Distance(t, capital.Tile) is >= 3 and <= 4);
         Assert.Null(Cmd(g, 0, CmdType.FoundCity, g.AddUnit(0, Rules.UnitIndex("settler"), near).Id));
         var second = g.CitiesOf(0).First(c => !c.Capital);
         g.S.Religions.Add(new Religion { Id = 2, Founder = 1, Belief = 1, HolyCity = theirs.Id, Name = "Другая" });
-        int Unrest(int religion)
+        bool CanProduce(int religion)
         {
             var copy = new Game(SaveGame.FromJson<GameState>(SaveGame.ToJson(g.S)));
             var c = copy.S.Cities[second.Id];
-            c.Religion = religion; c.Pressure.Clear(); c.Unrest = 20; c.Buildings.Clear();
+            c.Religion = religion; c.Pressure.Clear(); c.Buildings.Clear();
             copy.S.Cities[capital.Id].Pressure.Clear(); copy.S.Cities[capital.Id].Pressure[rel] = 9999;
             EndTurn(copy);
-            return c.Unrest;
+            return c.ProdRate > 0 && c.Prod > 0;
         }
-        int same = Unrest(rel), none = Unrest(0), other = Unrest(2);
-        Assert.True(same < none, $"state religion {same} vs none {none}");
-        Assert.True(other > none, $"strife {other} vs none {none}");
+        Assert.True(CanProduce(rel));
+        Assert.True(CanProduce(0));
+        Assert.True(CanProduce(2));
     }
 
     [Fact]

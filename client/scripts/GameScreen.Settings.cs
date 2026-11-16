@@ -10,8 +10,6 @@ public partial class GameScreen
     private VoiceChat _voice = null!;
     private AcceptDialog? _settingsDialog;
     private Label _micIndicator = null!;
-    private readonly HFlowContainer _avatarStrip = new();
-    private string _avatarState = "";
 
     public bool CityFocused => _win == Win.City;
 
@@ -83,38 +81,4 @@ public partial class GameScreen
         dialog.PopupCentered();
     }
 
-    private void BuildAvatarStrip(VBoxContainer container)
-    {
-        _avatarStrip.AddThemeConstantOverride("h_separation", 4);
-        _avatarStrip.AddThemeConstantOverride("v_separation", 2);
-        _avatarStrip.Alignment = FlowContainer.AlignmentMode.End;
-        container.AddChild(_avatarStrip);
-    }
-
-    private void RefreshAvatars()
-    {
-        var participants = W.Players.Values.Where(p => !p.Neutral && p.Alive && (!p.AI || p.Met))
-            .OrderBy(p => p.Id).ToArray();
-        string signature = W.CurrentPlayer + "|" + string.Join("|", participants.Select(p =>
-            $"{p.Id}:{VoiceChat.PlayerName(p)}:{p.Color}:{p.Connected}:{p.EndedTurn}"));
-        if (_avatarState == signature) return;
-        _avatarState = signature;
-        Ui.Clear(_avatarStrip);
-        foreach (var p in participants)
-        {
-            string name = VoiceChat.PlayerName(p);
-            bool pending = W.Settings.Simultaneous ? !p.EndedTurn : W.CurrentPlayer == p.Id;
-            var holder = new PanelContainer { CustomMinimumSize = new Vector2(28, 28), MouseFilter = MouseFilterEnum.Stop };
-            Color fill = p.Connected || p.AI ? Map.OwnerColor(p.Id).Darkened(0.52f) : Ui.Bg;
-            holder.AddThemeStyleboxOverride("panel", Ui.Box(fill, pending ? Ui.Gold : null, 16, 0, 0, 2));
-            holder.TooltipText = $"{name} · {(pending ? "Ход в процессе" : "Ход завершён")}";
-            string initial = string.IsNullOrWhiteSpace(name) ? "?" : System.Globalization.StringInfo.GetNextTextElement(name.TrimStart()).ToUpperInvariant();
-            var label = Ui.Lbl(initial, 14, Ui.Text, true);
-            label.HorizontalAlignment = HorizontalAlignment.Center;
-            label.VerticalAlignment = VerticalAlignment.Center;
-            label.MouseFilter = MouseFilterEnum.Ignore;
-            holder.AddChild(label);
-            _avatarStrip.AddChild(holder);
-        }
-    }
 }

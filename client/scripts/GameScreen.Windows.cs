@@ -16,6 +16,7 @@ public partial class GameScreen
 
     public void OpenCity(int id)
     {
+        if (_cityId != id) _citizenSource = -1;
         _cityId = id;
         Toggle(Win.City, true);
         // keep the city and its fields in the part of the map the panel leaves free
@@ -39,7 +40,9 @@ public partial class GameScreen
 
     public void Toggle(Win w, bool forceOpen = false)
     {
+        if (w == Win.Branches && !HasBranchAdvisor) return;
         _win = w == _win && !forceOpen ? Win.None : w;
+        if (_win != Win.City) _citizenSource = -1;
         _windowScroll.ScrollVertical = 0;
         _windowScroll.ScrollHorizontal = 0;
         _cityScroll.ScrollVertical = 0;
@@ -71,7 +74,7 @@ public partial class GameScreen
         _body = _windowBody;
         _wrapW = _bodyW - 28;
         Ui.Clear(_windowTabs);
-        foreach (var a in Advisors)
+        foreach (var a in Advisors.Where(a => a.win != Win.Branches || HasBranchAdvisor))
         {
             var win = a.win;
             _windowTabs.AddChild(Ui.Btn(a.title, () => Toggle(win, true), $"{a.tip} ({a.key})", 13, a.win == _win ? "TabOn" : "Tab"));
@@ -112,155 +115,170 @@ public partial class GameScreen
 
     private void BuildCity()
     {
-        if (!W.Cities.TryGetValue(_cityId, out var c) || c.Detail == null) { _win = Win.None; _cityDock.Visible = false; return; }
-        var d = c.Detail;
-        var me = W.Me;
-        Map.Highlight = d.Worked;
+        if (CitizenCity is not { Detail: { } d } c) { _win = Win.None; _cityDock.Visible = false; return; }
+        if (_citizenSource >= 0 && _citizenSource != c.Tile && !d.Worked.Contains(_citizenSource)) _citizenSource = -1;
+        Map.Highlight = CitizenHighlights(c, d);
         _cityTitle.Text = (c.Capital ? "★ " : "") + c.Name;
-        float w = _wrapW;
-        if (d.DisorderTurns > 0)
-            Add(Ui.Card(Ui.Wrap($"Беспорядки: производство остановлено ещё на {d.DisorderTurns} х.", w - 20, 13, Ui.Col(0xFFB3AC)), 8, Ui.Col(0x3A141A), Ui.Bad));
+        var me = W.Me;
+        Add(Ui.Card(Ui.Flow(14,
+            new Chip(Ico.Food, Ui.Food, "Пища за ход").Set(Ui.Signed(d.FoodRate)),
+            new Chip(Ico.Prod, Ui.Prod, "Производство за ход").Set(Ui.Signed(d.ProdRate)),
+            new Chip(Ico.Science, Ui.Science, $"Наука за ход · коммерция {d.Commerce}").Set(Ui.Signed(d.Science)),
+            new Chip(Ico.Gold, Ui.Gold, "Золото и содержание за ход").Set(Ui.Signed(d.Gold), d.Maint > 0 ? $"−{d.Maint}" : ""),
+            new Chip(Ico.Culture, Ui.Culture, "Культура за ход").Set(Ui.Signed(d.CultureRate))), 9));
 
-        // ---- what the city yields every turn
-        Add(Ui.Card(Ui.Flow(16,
-            new Chip(Ico.Food, Ui.Food, "Пища за ход: излишек идёт на рост населения").Set(Ui.Signed(d.FoodRate)),
-            new Chip(Ico.Prod, Ui.Prod, "Производство за ход: строит юнитов и здания").Set($"+{d.ProdRate}"),
-            new Chip(Ico.Science, Ui.Science, $"Наука за ход. Коммерция города: {d.Commerce}, делится ползунком в «Экономике»").Set($"+{d.Science}"),
-            new Chip(Ico.Gold, Ui.Gold, $"Золото за ход. Содержание города: −{d.Maint}").Set($"+{d.Gold}", d.Maint > 0 ? $"−{d.Maint}" : ""),
-            new Chip(Ico.Culture, Ui.Culture, "Культура за ход: расширяет границы и двигает институты").Set($"+{d.CultureRate}")), 9));
-
-        // ---- growth, borders, mood
-        string growth = d.FoodRate > 0 ? $"рост через {Turns(d.FoodNeed - d.Food, d.FoodRate)}" : d.FoodRate < 0 ? "голод!" : "застой";
+        bool housingFull = c.Pop >= d.HousingCapacity || d.EmpireHousingFree <= 0;
+        string growth = d.FoodRate < 0 ? "Голод" : housingFull ? "Нужно жильё"
+            : d.FoodRate > 0 ? $"Рост через {Turns(d.FoodNeed - d.Food, d.FoodRate)}" : "Нет роста";
         var grow = Ui.V(4,
-            Ui.H(6, new Icon(Ico.Pop, Ui.Food, 14), Ui.Lbl($"Население {c.Pop}", 13, null, true), Ui.Spacer(), Ui.Lbl($"{d.Food}/{d.FoodNeed} · {growth}", 12, d.FoodRate < 0 ? Ui.Bad : Ui.Dim)),
-            new Bar(d.FoodRate < 0 ? Ui.Bad : Ui.Food, 6).Set(d.Food / (float)Math.Max(1, d.FoodNeed), Math.Max(0, d.FoodRate) / (float)Math.Max(1, d.FoodNeed)));
+            Ui.H(6, new Icon(Ico.Pop, Ui.Food, 14), Ui.Lbl($"Жители {c.Pop}/{d.HousingCapacity}", 13, null, true),
+                Ui.Spacer(), Ui.Lbl(growth, 12, d.FoodRate < 0 ? Ui.Bad : housingFull ? Ui.Gold : Ui.Dim)),
+            new Bar(d.FoodRate < 0 ? Ui.Bad : Ui.Food, 6).Set(Math.Clamp(d.Food / (float)Math.Max(1, d.FoodNeed), 0, 1),
+                housingFull ? 0 : Math.Max(0, d.FoodRate) / (float)Math.Max(1, d.FoodNeed)));
         int from = Rules.CultureForRadius(c.Radius), to = Rules.CultureForRadius(c.Radius + 1);
         bool maxed = c.Radius >= 4;
         var borders = Ui.V(4,
             Ui.H(6, new Icon(Ico.Culture, Ui.Culture, 14), Ui.Lbl($"Границы: радиус {c.Radius}", 13, null, true), Ui.Spacer(),
-                Ui.Lbl(maxed ? "наибольший" : $"{d.Culture}/{to} · {Turns(to - d.Culture, d.CultureRate)}", 12, Ui.Dim)),
-            new Bar(Ui.Culture, 6).Set(maxed ? 1 : (d.Culture - from) / (float)Math.Max(1, to - from), maxed ? 0 : d.CultureRate / (float)Math.Max(1, to - from)));
-        var unrestColor = d.Unrest >= 60 ? Ui.Bad : d.Unrest >= 30 ? Ui.Gold : Ui.Good;
+                Ui.Lbl(maxed ? "Наибольший" : $"{d.Culture}/{to} · {Turns(to - d.Culture, d.CultureRate)}", 12, Ui.Dim)),
+            new Bar(Ui.Culture, 6).Set(maxed ? 1 : (d.Culture - from) / (float)Math.Max(1, to - from),
+                maxed ? 0 : d.CultureRate / (float)Math.Max(1, to - from)));
+        var moodColor = d.Unhappy > 0 ? Ui.Gold : Ui.Good;
         var mood = Ui.V(4,
-            Ui.H(6, new Icon(Ico.Happy, d.Unhappy > 0 ? Ui.Bad : Ui.Gold, 14), Ui.Lbl("Довольство", 13, null, true), Ui.Spacer(),
-                Ui.Lbl($"предел {d.Happy} · недовольных {d.Unhappy}", 12, d.Unhappy > 0 ? Ui.Bad : Ui.Dim)),
-            Ui.H(6, new Icon(Ico.Unrest, unrestColor, 14), Ui.Lbl("Брожение", 13, null, true), new Bar(unrestColor, 6).Set(d.Unrest / 100f),
-                Ui.Lbl($"{d.Unrest}/100" + (d.Unrest >= 60 ? " — близко к протестам" : ""), 12, d.Unrest >= 60 ? Ui.Bad : Ui.Dim)));
-        mood.TooltipText = "Жители сверх предела довольства не работают. Брожение растёт у лидеров мира, в дальних городах, от усталости от войны и религиозной розни; при 100 начинаются протесты";
-        Add(Ui.Card(Ui.V(9, grow, borders, mood), 9));
+            Ui.H(6, new Icon(Ico.Happy, moodColor, 14), Ui.Lbl("Довольство", 13, null, true), Ui.Spacer(),
+                Ui.Lbl($"{c.Pop - d.Unhappy}/{c.Pop}", 12, moodColor)),
+            new Bar(moodColor, 6).Set((c.Pop - d.Unhappy) / (float)Math.Max(1, c.Pop)));
+        mood.TooltipText = "Довольные жители работают на клетках города.";
+        var housing = Ui.Lbl($"Жильё державы: {d.EmpireHousingCapacity - d.EmpireHousingFree}/{d.EmpireHousingCapacity}" +
+            (d.EmpireHousingFree < 0 ? $" · не хватает {-d.EmpireHousingFree}" : ""), 12, d.EmpireHousingFree > 0 ? Ui.Dim : Ui.Gold);
+        housing.TooltipText = "Жители, боевые юниты и разведчики занимают по одному месту.";
+        Add(Ui.Card(Ui.V(8, grow, borders, mood, housing), 9));
 
-        // ---- faith and blessings
-        var creed = me.Religions.FirstOrDefault(r => r.Id == c.Religion);
-        string pressure = string.Join(", ", Enumerable.Range(0, d.Pressure.Length / 2)
-            .Select(i => $"{me.Religions.FirstOrDefault(r => r.Id == d.Pressure[i * 2])?.Name ?? "?"} {d.Pressure[i * 2 + 1]}"));
-        var facts = Ui.V(3);
-        facts.AddChild(Ui.Wrap(creed == null ? "Религия: нет" + (pressure.Length > 0 ? $" (давление: {pressure})" : "")
-            : $"Религия: {creed.Name} — {Rules.Beliefs[creed.Belief].Name}: {Rules.Beliefs[creed.Belief].Effect.Describe()}", w - 4, 12, creed == null ? Ui.Dim : Ui.Faith));
-        if (me.StateReligion != 0 && c.Religion != 0)
+        var auto = Ui.Btn("Авто", () =>
         {
-            bool harmony = c.Religion == me.StateReligion;
-            facts.AddChild(Ui.Wrap(harmony ? "Одна вера со столицей: −1 брожения за ход" : "Религиозная рознь со столицей: +2 брожения за ход", w - 4, 12, harmony ? Ui.Good : Ui.Bad));
-        }
-        if (d.Buffs.Length > 0) facts.AddChild(Ui.Wrap("Благословения: " + string.Join(", ", d.Buffs), w - 4, 12, Ui.Good));
-        Add(facts);
+            _citizenSource = -1;
+            Net.SendCommand(CmdType.AssignCitizen, c.Id, -1, -1);
+            Map.Highlight = d.Worked;
+            Map.Invalidate();
+            RebuildWindow();
+        }, "Вернуть автоматическое распределение жителей", 12, "Flat");
+        auto.Disabled = !d.ManualCitizens && _citizenSource < 0;
+        Add(Ui.H(8, Ui.Lbl(_citizenSource < 0 ? "Выберите жителя на карте" : "Выберите свободную клетку", 12,
+            _citizenSource < 0 ? Ui.Dim : Ui.Good), Ui.Spacer(), auto));
+        if (d.Buffs.Length > 0) Add(Ui.Wrap(string.Join(" · ", d.Buffs), _wrapW - 4, 12, Ui.Good));
 
-        Heading($"Постройки · {d.Buildings.Length}");
-        var built = Ui.Flow(5);
-        foreach (string b in d.Buildings)
-            built.AddChild(Ui.Pill(Rules.Building(b)?.Name ?? b, Ui.Col(0xC8D0E0), 12, Rules.Building(b)?.Describe() ?? ""));
-        Add(built);
-
-        // ---- production queue
         Heading("Производство");
-        if (d.Queue.Length == 0) Add(Ui.Card(Ui.Lbl("Город простаивает — выберите, что строить", 13, Ui.Col(0xFFB3AC)), 8, Ui.Col(0x3A141A, 0.8f), Ui.Col(0x8A3B40)));
+        var projectBg = Ui.Col(0x182031);
+        if (d.Queue.Length == 0)
+            Add(Ui.Card(Ui.Lbl("Нет проекта в очереди", 13, Ui.Dim), 8, projectBg));
         for (int i = 0; i < d.Queue.Length; i++)
         {
+            int position = i;
             string item = d.Queue[i];
-            int cost = Rules.ItemCost(item), idx = i;
-            var remove = Ui.Btn("✕", () => Net.SendCommand(CmdType.RemoveQueue, c.Id, idx), "Убрать из очереди", 12, "Flat");
-            if (i > 0 || item == Rules.Wealth)
+            int cost = ProjectCost(item, d);
+            var title = Ui.H(6, Ui.Lbl($"{i + 1}.", 12, Ui.Dim), Ui.Lbl(Rules.ItemName(item), 13, Ui.Text, i == 0),
+                Ui.Spacer(), Ui.Btn("×", () => Net.SendCommand(CmdType.RemoveQueue, c.Id, position), "Убрать из очереди", 12, "Flat"));
+            var project = Ui.V(4, title);
+            if (i == 0 && cost > 0)
             {
-                Add(Ui.H(6, Ui.Lbl($"{i + 1}.", 12, Ui.Dim), Ui.Lbl(item == Rules.Wealth ? "Богатство: производство → золото" : Rules.ItemName(item), 13),
-                    Ui.Spacer(), Ui.Lbl(item == Rules.Wealth ? "" : $"{cost}", 12, Ui.Dim), remove));
-                continue;
+                int rate = Rate(item);
+                project.AddChild(new Bar(Ui.Prod, 6).Set(Math.Min(d.Prod, cost) / (float)cost, rate / (float)cost));
+                string? blocked = BlockingReason(item);
+                if (blocked != null && item.StartsWith("u:", StringComparison.Ordinal) && d.EmpireHousingFree <= 0)
+                    blocked += ". Купите дом из списка или уберите проект из начала очереди.";
+                project.AddChild(Ui.Wrap(blocked ?? $"{Math.Min(d.Prod, cost)}/{cost} · {Turns(cost - d.Prod, rate)}",
+                    _wrapW - 26, 12, blocked == null ? Ui.Dim : Ui.Gold));
             }
-            var now = Ui.V(5,
-                Ui.H(6, new Icon(Ico.Prod, Ui.Prod, 15), Ui.Lbl(Rules.ItemName(item), 14, null, true), Ui.Spacer(),
-                    Ui.Lbl($"{Math.Min(d.Prod, cost)}/{cost} · {Turns(cost - d.Prod, d.ProdRate)}", 12, Ui.Dim), remove),
-                new Bar(Ui.Prod, 7).Set(d.Prod / (float)Math.Max(1, cost), d.ProdRate / (float)Math.Max(1, cost)));
-            int unitType = item.StartsWith("u:") ? Rules.UnitIndex(item[2..]) : -1;
-            bool noSpace = unitType >= 0 && W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
-            bool needsCitizen = unitType >= 0 && Rules.Units[unitType].Role == UnitRole.Settler && c.Pop < 2;
-            if (noSpace) now.AddChild(Ui.Lbl("Освободите место в гарнизоне для нового юнита.", 12, Ui.Gold));
-            if (needsCitizen) now.AddChild(Ui.Lbl("Для поселенца нужно население не меньше 2.", 12, Ui.Gold));
-            int price = Rules.BuyPrice(cost, d.Prod);
-            if (price > 0)
-            {
-                var buyRow = Ui.H(6);
-                string buyTip = unitType >= 0 ? "Юнит появится сразу. Двигаться он сможет со следующего хода." : "Оплатить оставшееся строительство за золото";
-                var buy = Ui.Btn($"Купить · {price} зол.", () => Net.SendCommand(CmdType.Buy, c.Id), buyTip, 13);
-                buy.Disabled = noSpace || needsCitizen || me.Gold < price;
-                buyRow.AddChild(buy);
-                bool peaceful = item.StartsWith("b:") || Rules.Units[Rules.UnitIndex(item[2..])].Role != UnitRole.Military;
-                if (peaceful)
-                {
-                    int fp = Rules.FaithPrice(cost, d.Prod);
-                    var buyF = Ui.Btn($"За веру · {fp}", () => Net.SendCommand(CmdType.BuyFaith, c.Id), "Вера оплачивает здания и мирных юнитов", 13);
-                    buyF.Disabled = noSpace || me.Faith < fp;
-                    buyRow.AddChild(buyF);
-                }
-                now.AddChild(buyRow);
-            }
-            Add(Ui.Card(now, 9));
+            Add(Ui.Card(project, 7, projectBg));
         }
 
-        // ---- what can be built
-        Heading("Построить");
-        var append = new CheckBox { Text = "В конец очереди (иначе заменяет текущий проект)", ButtonPressed = _appendQueue, FocusMode = FocusModeEnum.None };
-        append.AddThemeFontSizeOverride("font_size", 12);
-        append.Toggled += on => _appendQueue = on;
-        Add(append);
-        float colW = (w - 8) / 2;
-        var units = Ui.V(3, Ui.Lbl("ЮНИТЫ", 11, Ui.Dim, true));
-        var builds = Ui.V(3, Ui.Lbl("ЗДАНИЯ", 11, Ui.Dim, true));
-        units.CustomMinimumSize = builds.CustomMinimumSize = new Vector2(colW, 0);
-        Add(Ui.H(8, units, builds));
-        void Option(VBoxContainer col, string item, string name, int cost, string tip, Ico icon, Color color)
+        foreach (var house in Housing.Materials)
         {
-            var b = Ui.RowBtn(name, cost > 0 ? $"{cost} · {Turns(cost, d.ProdRate)}" : "", () => Net.SendCommand(CmdType.SetProduction, c.Id, _appendQueue ? 1 : 0, 0, item),
-                name + (cost > 0 ? $" — {cost} производства" : "") + "\n" + tip, icon, color, 12);
-            col.AddChild(b);
+            int count = c.Houses.ElementAtOrDefault((int)house.Material);
+            int places = d.HousePlaces.ElementAtOrDefault((int)house.Material);
+            string tip = $"+{(places > 0 ? places : house.Places)} места · {Rules.Tech(house.Tech)?.Name}. {house.Notes}";
+            Option(house.Item, house.Name + (count > 0 ? $" ×{count}" : ""), tip, Ico.City, Ui.Gold);
         }
-        bool coastal = CoastalCity(c);
-        var buildable = Rules.Units.Where(x => x.Role != UnitRole.Missionary && !x.X.SummonOnly && W.Knows(x.Tech) && HasRes(x.Needs) && (!x.Sea || coastal)).ToList();
-        // settlers, workers, scouts and branch specialists are always offered; of the regular troops only the best few,
-        // otherwise the list grows without end and obsolete units crowd it
-        var always = buildable.Where(x => x.Role != UnitRole.Military || x.X != Rules.ModUnit.None).OrderBy(x => x.Sea).ThenBy(x => x.Cost);
-        var land = buildable.Where(x => !x.Sea && x.Role == UnitRole.Military && x.X == Rules.ModUnit.None).OrderByDescending(x => x.Str).ThenByDescending(x => x.Cost).Take(5).Reverse();
-        var navy = buildable.Where(x => x.Sea && x.Role == UnitRole.Military).OrderByDescending(x => x.Str).Take(3).Reverse();
-        foreach (var ud in always.Concat(land).Concat(navy))
-            Option(units, "u:" + ud.Id, ud.Name, ud.Cost, ud.Role switch
+        foreach (var unit in Rules.Units.Where(unit => unit.Role != UnitRole.Missionary && !unit.X.SummonOnly &&
+            (W.Knows(unit.Tech) || d.Queue.Contains("u:" + unit.Id)) && (!unit.Sea || CoastalCity(c))).OrderBy(unit => unit.Cost))
+        {
+            string tip = unit.Role switch
             {
-                UnitRole.Settler => "Основывает новый город (город теряет 1 жителя)",
-                UnitRole.Worker => ud.Sea ? "Строит рыбацкие суда и нефтяные платформы на морских ресурсах" : "Строит улучшения на суше и дороги",
-                _ => $"Сила {ud.Str}, ходы {ud.Moves}" + (ud.CityDefPct > 0 ? $", +{ud.CityDefPct}% при обороне города" : "")
-                     + (ud.Needs != Resource.None ? $", требует ресурс: {Rules.Res(ud.Needs).Name}" : "")
-                     + (ud.X.Abilities().Length > 0 ? "\n" + ud.X.Abilities() : ""),
-            }, UnitIcon(ud), ud.X != Rules.ModUnit.None ? Ui.Power : ud.Role == UnitRole.Military ? Ui.Col(0xC8D0E0) : Ui.Good);
-        Option(units, Rules.Wealth, "Богатство", 0, "Город не строит ничего, а превращает производство в золото", Ico.Gold, Ui.Gold);
-        var missing = Rules.Units.Where(x => x.Role != UnitRole.Missionary && W.Knows(x.Tech) && !HasRes(x.Needs) && (!x.Sea || coastal)).ToList();
-        if (missing.Count > 0)
-            units.AddChild(Ui.Wrap("Нет ресурса: " + string.Join(", ", missing.Select(x => $"{x.Name} ({Rules.Res(x.Needs).Name})")), colW - 4, 11, Ui.Dim));
-        foreach (var bd in Rules.Buildings.Where(x => x.Id != "palace" && W.Knows(x.Tech) && (!x.Coastal || coastal) && !d.Buildings.Contains(x.Id) && !d.Queue.Contains("b:" + x.Id)))
-            Option(builds, "b:" + bd.Id, bd.Name, bd.Cost, bd.Describe(), Ico.City, bd.X != Rules.ModBuilding.None ? Ui.Power : Ui.Col(0xC8D0E0));
-        Note("Правый клик по свободной клетке у границы покупает её для города, пока открыта эта панель.");
+                UnitRole.Settler => "Основывает город. При найме расходуется один житель.",
+                UnitRole.Worker => unit.Sea ? "Работает на воде." : "Строит улучшения и дороги.",
+                _ => $"Сила {unit.Str} · передвижение {unit.Moves}",
+            };
+            Option("u:" + unit.Id, unit.Name, tip, UnitIcon(unit), Rules.IsStacked(unit) ? Ui.Text : Ui.Good);
+        }
+        foreach (var building in Rules.Buildings.Where(b => d.Buildings.Contains(b.Id) ||
+            W.Knows(b.Tech) && b.Id != "palace" && (!b.Coastal || CoastalCity(c))))
+            Option("b:" + building.Id, building.Name, building.Describe(), Ico.City, Ui.Text, d.Buildings.Contains(building.Id));
+        Option(Rules.Wealth, "Богатство", "Превращает производство в золото.", Ico.Gold, Ui.Gold);
+
+        int Rate(string item) => d.ProdRate * (item == "h:wood" && d.HasLumberMill ? 2 : 1);
+        string? BlockingReason(string item)
+        {
+            if (Housing.Project(item) is { } house)
+            {
+                if (!W.Knows(house.Tech)) return $"Нужно изучить: {Rules.Tech(house.Tech)?.Name}";
+                if (house.Material == HouseMaterial.Stone && !d.HasQuarry) return "Нужна действующая каменоломня";
+            }
+            int type = item.StartsWith("u:", StringComparison.Ordinal) ? Rules.UnitIndex(item[2..]) : -1;
+            if (type < 0) return null;
+            var def = Rules.Units[type];
+            if (!HasRes(def.Needs)) return $"Нужен ресурс: {Rules.Res(def.Needs).Name}";
+            if (Rules.IsStacked(def) && d.EmpireHousingFree <= 0) return "В державе нет свободного жилья";
+            if (!W.HasUnitSpace(c.Owner, c.Tile, type)) return "На клетке города нет места";
+            if (def.Role == UnitRole.Settler && c.Pop < 2) return "Нужно как минимум 2 жителя";
+            return null;
+        }
+
+        void Option(string item, string name, string tip, Ico icon, Color color, bool built = false)
+        {
+            int cost = ProjectCost(item, d), index = Array.IndexOf(d.Queue, item);
+            int progress = index == 0 ? d.Prod : 0;
+            string? reason = built ? "Построено" : BlockingReason(item);
+            if (reason != null) tip = reason + "\n" + tip;
+            var row = Ui.H(4);
+            var queue = Ui.RowBtn(built ? "✓ " + name : name, index >= 0 ? $"#{index + 1}" : "",
+                () => Net.SendCommand(CmdType.SetProduction, c.Id, 1, 0, item), tip, icon, built ? Ui.Good : color, 12);
+            if (built) queue.AddThemeColorOverride("font_disabled_color", Ui.Good);
+            queue.Disabled = built || reason != null || d.Queue.Length >= Rules.MaxQueue ||
+                index >= 0 && (item.StartsWith("b:", StringComparison.Ordinal) || item == Rules.Wealth);
+            queue.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+            row.AddChild(queue);
+            if (cost > 0 && !built)
+            {
+                int gold = Rules.BuyPrice(cost, progress), faith = Rules.FaithPrice(cost, progress);
+                row.AddChild(Purchase(Ico.Gold, Ui.Gold, gold, me.Gold, CmdType.Buy, "золото"));
+                row.AddChild(Purchase(Ico.Faith, Ui.Faith, faith, me.Faith, CmdType.BuyFaith, "веру"));
+                var duration = Ui.H(3, new Icon(Ico.Prod, Ui.Prod, 13), Ui.Lbl(Turns(cost - progress, Rate(item)), 12, Ui.Dim));
+                duration.CustomMinimumSize = new Vector2(58, 0);
+                duration.TooltipText = $"{cost} производства · {Rate(item)} за ход";
+                row.AddChild(duration);
+            }
+            Add(index >= 0 || built ? Ui.Card(row, 2, projectBg) : row);
+
+            Button Purchase(Ico currencyIcon, Color currencyColor, int price, int available, CmdType command, string currency)
+            {
+                var button = Ui.RowBtn(price.ToString(), "", () => Net.SendCommand(command, c.Id, 0, 0, item),
+                    reason ?? $"Купить сразу за {currency}: {price}", currencyIcon, currencyColor, 12);
+                button.CustomMinimumSize = new Vector2(60, 29);
+                button.Disabled = reason != null || price <= 0 || available < price;
+                return button;
+            }
+        }
     }
+
+    private static int ProjectCost(string item, CityDetail detail) => Housing.Project(item) is { } house
+        ? Math.Max(1, detail.HouseCosts.ElementAtOrDefault((int)house.Material) is > 0 and var cost ? cost : house.Cost)
+        : Rules.ItemCost(item);
 
     internal static string Unlocks(TechDef t)
     {
         var parts = new List<string>();
         parts.AddRange(Rules.Units.Where(u => u.Tech == t.Id).Select(u => u.Name));
         parts.AddRange(Rules.Buildings.Where(b => b.Tech == t.Id).Select(b => b.Name));
+        parts.AddRange(Housing.Materials.Where(h => h.Tech == t.Id).Select(h => h.Name));
         foreach (var k in Rules.AllWork)
             if (Rules.WorkTech(k) == t.Id) parts.Add(Rules.WorkName(k).ToLower() + " (улучшение)");
         parts.AddRange(Rules.Resources.Where(r => r.Reveal == t.Id).Select(r => "ресурс " + r.Name.ToLower()));
@@ -378,7 +396,7 @@ public partial class GameScreen
     private void BuildBranches()
     {
         _windowTitle.Text = "Ветки развития";
-        var branches = Enumerable.Range(0, Rules.Branches.Count).Where(i => Rules.Branches[i].Id != Rules.ShamanismBranch).ToArray();
+        var branches = Enumerable.Range(0, Rules.Branches.Count).Where(ShowBranch).ToArray();
         if (branches.Length == 0)
         {
             Add(Ui.Lbl("В этой игре нет особых веток. Хост может добавить их файлами в папке модов (кнопка «Папка модов» в главном меню).", 14, Ui.Dim));
@@ -493,6 +511,16 @@ public partial class GameScreen
     private bool BranchUnlocked(int index) => Rules.BranchUnlocked(Rules.Branches[index], W.Knows(Rules.ReligionCivic),
         W.Me.Nodes, index < W.Me.BranchCurrent.Length ? W.Me.BranchCurrent[index] : null);
 
+    private bool ShowBranch(int index)
+    {
+        var branch = Rules.Branches[index];
+        return branch.Id != Rules.ShamanismBranch && BranchUnlocked(index)
+            && (branch.Nodes.Any(node => W.Me.Nodes.Contains(node.Id) || node.Requires.All(W.Knows))
+                || (index < W.Me.BranchCurrent.Length && W.Me.BranchCurrent[index].Length > 0));
+    }
+
+    private bool HasBranchAdvisor => Enumerable.Range(0, Rules.Branches.Count).Any(ShowBranch);
+
     private void OpenBranch(int index)
     {
         if (Rules.Branches[index].Id == Rules.ShamanismBranch)
@@ -580,9 +608,9 @@ public partial class GameScreen
             var name = Ui.Lbl($"{c.Name}: {(rel == null ? "без религии" : rel.Name)}", 14);
             name.CustomMinimumSize = new Vector2(300, 0);
             var recruit = Ui.Btn($"Нанять миссионера ({Rules.MissionaryFaith} веры)", () => Net.SendCommand(CmdType.Recruit, cid), size: 13);
-            bool isFull = W.UnitsAt(c.Tile).Count() >= Rules.MaxUnitsPerTile;
+            bool isFull = !W.HasUnitSpace(W.MyId, c.Tile, Rules.UnitIndex("missionary"));
             recruit.Disabled = isFull || me.Faith < Rules.MissionaryFaith || (mine == null && rel == null);
-            if (isFull) recruit.TooltipText = "В городе уже три юнита";
+            if (isFull) recruit.TooltipText = "На клетке города нет места для ещё одного мирного юнита";
             Add(Ui.H(10, name, recruit));
         }
     }
@@ -647,7 +675,6 @@ public partial class GameScreen
             Add(Ui.Lbl($"Вы оторвались от остального мира. Давление лидера: {me.Pressure * 100:0}%", 14, Ui.Bad));
             Add(Ui.Lbl($"• Информационный вакуум: наука ×{me.SciMult:0.00}, культура ×{me.CulMult:0.00}", 14));
             Add(Ui.Lbl($"• Логистический надрыв: содержание ×{me.UpkeepMult:0.00}", 14));
-            Add(Ui.Lbl("• Социальное брожение: в городах, особенно далёких от столицы, растёт недовольство — возможны протесты и сепаратизм", 14));
         }
         else if (me.Lag > 0.005f)
         {
@@ -662,11 +689,11 @@ public partial class GameScreen
         Heading("Связи с миром");
         Add(Ui.Lbl(me.TradeLuxuries > 0 ? $"• Импорт роскоши: +{me.TradeLuxuries} довольства в каждом городе (не больше {Rules.MaxTradeLuxuries})"
             : "• Импорт роскоши можно предложить в разделе «Державы» (F4)", 14, me.TradeLuxuries > 0 ? Ui.Good : Ui.Dim));
-        Add(Ui.Lbl(me.WarWeariness > 0 ? $"• Усталость от войны: +{me.WarWeariness} брожения за ход в каждом городе (войны дольше {Rules.WarWearinessAfter} ходов)"
+        Add(Ui.Lbl(me.WarWeariness > 0 ? $"• Долгих войн: {me.WarWeariness} (порог {Rules.WarWearinessAfter} ходов)"
             : "• Усталости от войны нет", 14, me.WarWeariness > 0 ? Ui.Bad : Ui.Dim));
         var state = me.Religions.FirstOrDefault(r => r.Id == me.StateReligion);
         Add(Ui.Lbl(state == null ? "• Государственной религии нет (ею становится религия столицы)"
-            : $"• Государственная религия — «{state.Name}». Единоверцев среди известных держав: {me.Brethren} (+1 одобрения за каждого, сильнее научное эхо, ИИ охотнее идёт на мир и открытые границы)", 14,
+            : $"• Государственная религия — «{state.Name}». Единоверцев среди известных держав: {me.Brethren} (сильнее научное эхо, ИИ охотнее идёт на мир и открытые границы)", 14,
             me.Brethren > 0 ? Ui.Good : Ui.Dim));
         Add(Ui.Btn("Демография и рейтинг держав (F9)", () => Toggle(Win.Demographics, true), size: 13));
         Heading("Города");
@@ -683,8 +710,8 @@ public partial class GameScreen
             cities.AddChild(Ui.Lbl($"+{d.ProdRate}", 13));
             cities.AddChild(Ui.Lbl($"+{d.Science}", 13, Ui.Science));
             cities.AddChild(Ui.Lbl($"+{d.Gold}", 13, Ui.Gold));
-            cities.AddChild(Ui.Lbl(d.DisorderTurns > 0 ? "беспорядки" : d.Queue.Length > 0 ? Rules.ItemName(d.Queue[0]) : "— простаивает —", 13,
-                d.DisorderTurns > 0 || d.Queue.Length == 0 ? Ui.Bad : null));
+            cities.AddChild(Ui.Lbl(d.Queue.Length > 0 ? Rules.ItemName(d.Queue[0]) : "— простаивает —", 13,
+                d.Queue.Length == 0 ? Ui.Bad : null));
         }
         Add(cities);
     }
@@ -835,6 +862,6 @@ public partial class GameScreen
         Topic(Ico.Faith, Ui.Faith, "Религия", "Вера покупает мирные проекты и основывает религию. Верование действует в каждом городе, который ей следует; религия расходится сама и с миссионерами. Единая вера успокаивает города и сближает державы.");
         Topic(Ico.Favor, Ui.Favor, "Державы и конгресс", "В разделе «Державы» (F4) заключают сделки, открывают границы, создают оборонительные союзы и делятся показателями. Одобрение можно обменять, потратить на разведку или отдать как голоса в конгрессе.");
         Topic(Ico.Sword, Ui.Bad, "Война", "Перед атакой наведите курсор на врага: панель покажет шанс победы и урон. Холмы, лес, укрепление и стены помогают обороне. Долгая война утомляет ваши города.");
-        Topic(Ico.Chart, Ui.Good, "Анти-Сноуболл", "Игра сама сдерживает отрыв: лидер получает штрафы к науке, культуре и содержанию и рискует протестами и сепаратизмом, а отстающие — скидки на уже открытое миром и научное эхо. Положение показано в правом углу верхней панели.");
+        Topic(Ico.Chart, Ui.Good, "Анти-Сноуболл", "Игра сдерживает отрыв: у лидера дороже содержание и медленнее развитие, а отстающие получают скидки на открытые миром технологии и научное эхо. Положение показано в верхней панели.");
     }
 }

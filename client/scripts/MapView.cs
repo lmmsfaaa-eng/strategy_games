@@ -333,6 +333,10 @@ public partial class MapView : Node3D
         }
     }
 
+    internal bool IsUnitMoving(int id) => _units.TryGetValue(id, out var n) && (n.Path.Count > 0 || n.Predicted >= 0);
+    private readonly Dictionary<int, int[]> _displayedArmies = new();
+    internal IReadOnlyList<int> DisplayedArmy(int id) => _displayedArmies.GetValueOrDefault(id) ?? Array.Empty<int>();
+
     public void CenterOn(int tile) { Cam = Ground(tile); ApplyCamera(); }
 
     /// <summary>Centres on a tile but leaves it shifted on screen: a positive X puts the tile left of the middle.</summary>
@@ -379,6 +383,7 @@ public partial class MapView : Node3D
 
     public override void _Ready()
     {
+        AddWeatherEffects();
         var viewport = GetViewport();
         viewport.SizeChanged += ApplyCamera;
         TreeExiting += () => viewport.SizeChanged -= ApplyCamera;
@@ -482,6 +487,7 @@ public partial class MapView : Node3D
     // -------------------------------------------------------------- state
     public void OnDelta(DeltaMsg d)
     {
+        if (d.Full) ResetWeather();
         if (d.Full) for (int i = 0; i < _chunks.Length; i++) _dirtyChunks.Add(i);
         foreach (var t in d.Tiles)
         {
@@ -489,6 +495,7 @@ public partial class MapView : Node3D
             if (!d.Full && _lastVisibility[t.Idx] == 0 && W.Vis[t.Idx] > 0 && _fogTransitions.Count < 180)
                 _fogTransitions.Add((t.Idx, Now + 0.42));
             _lastVisibility[t.Idx] = W.Vis[t.Idx];
+            if (!TrackWeatherTile(t)) continue;
             MarkDirty(t.Idx);
             foreach (int n in W.Grid.Nb[t.Idx]) MarkDirty(n);
         }
@@ -598,6 +605,8 @@ public partial class MapView : Node3D
         }
 
         double now = Now;
+        bool weatherAnimating = AnimateWeather(delta, now);
+        if (weatherAnimating) OS.LowProcessorUsageMode = false;
         _fogTransitions.RemoveAll(item => item.End <= now);
         if (_fogWasDrawn || _fogTransitions.Count != 0) DrawFogTransitions(now);
         bool moving = false;
@@ -627,7 +636,7 @@ public partial class MapView : Node3D
             DrawLines();
             if (moving || _flashes.Count > 0 || _fogTransitions.Count > 0) OS.LowProcessorUsageMode = false;
         }
-        else if (!OS.LowProcessorUsageMode) OS.LowProcessorUsageMode = true;
+        else if (!weatherAnimating && !OS.LowProcessorUsageMode) OS.LowProcessorUsageMode = true;
     }
 
     private void DrawFogTransitions(double now)
@@ -728,7 +737,13 @@ public partial class MapView : Node3D
         if (HoverPath != null) HoverTurns = W.PredictArrivalTurn(unit, HoverPath);
     }
 
-    public void Select(int unitId) { SelectedUnit = unitId; UpdateHoverRoute(); _dirty = true; }
+    public void Select(int unitId)
+    {
+        _screen.StackSelectionChanged(unitId);
+        SelectedUnit = unitId;
+        UpdateHoverRoute();
+        _dirty = true;
+    }
     public void Invalidate() => _dirty = true;
 
     // ------------------------------------------------------------- colors
@@ -905,6 +920,7 @@ public partial class MapView : Node3D
     private void SyncUnits()
     {
         UnitProjectionRevision++;
+        _displayedArmies.Clear();
         var stacks = W.Units.Values.Where(u => _units.ContainsKey(u.Id)).GroupBy(u =>
         {
             var n = _units[u.Id];
@@ -912,12 +928,30 @@ public partial class MapView : Node3D
         });
         foreach (var stack in stacks)
         {
-            var units = stack.OrderBy(u => u.Id).ToArray();
-            bool city = W.Tiles[stack.Key].CityId >= 0;
-            for (int i = 0; i < units.Length; i++)
+            var moving = stack.Where(u => IsUnitMoving(u.Id)).OrderBy(u => u.Id).ToArray();
+            var standing = stack.Where(u => !IsUnitMoving(u.Id)).OrderBy(u => u.Id).ToArray();
+            var representatives = standing.Where(u => Rules.IsStacked(u.Def)).GroupBy(u => u.Owner)
+                .Select(group => RepresentArmy(group.ToArray())).ToArray();
+            var units = standing.Where(u => !Rules.IsStacked(u.Def)).Concat(representatives).OrderBy(u => u.Id).ToArray();
+            var movingArmies = moving.Where(u => Rules.IsStacked(u.Def)).GroupBy(u =>
             {
-                var u = units[i];
                 var n = _units[u.Id];
+                return (u.Owner, u.Tile, X: Mathf.RoundToInt(n.Pos.X * 4), Y: Mathf.RoundToInt(n.Pos.Z * 4));
+            }).Select(group => RepresentArmy(group.ToArray()));
+            var visible = units.Concat(moving.Where(u => !Rules.IsStacked(u.Def))).Concat(movingArmies).ToArray();
+            var visibleIds = visible.Select(u => u.Id).ToHashSet();
+            foreach (var hidden in stack.Where(u => !visibleIds.Contains(u.Id)))
+            {
+                var node = _units[hidden.Id];
+                node.Root.Hide();
+                foreach (var copy in node.Copies) copy.Hide();
+            }
+            bool city = W.Tiles[stack.Key].CityId >= 0;
+            for (int i = 0; i < visible.Length; i++)
+            {
+                var u = visible[i];
+                var n = _units[u.Id];
+                n.Root.Show();
                 if (n.Type != u.Type || n.Owner != u.Owner)
                 {
                     n.Type = u.Type;
@@ -936,7 +970,7 @@ public partial class MapView : Node3D
                 n.Body.Position = new Vector3(-n.MeshCenter.X * scale, lift, -n.MeshCenter.Y * scale);
                 n.BodyTop = n.MeshHeight * scale + lift;
                 n.Ring.Visible = u.Id == SelectedUnit;
-                Vector2 slot = FormationSlot(i, units.Length);
+                Vector2 slot = i < units.Length ? FormationSlot(i, units.Length) : Vector2.Zero;
                 Vector2 horizontal = RightDir * slot.X + ForwardDir * slot.Y;
                 if (n.Path.Count == 0) n.Pos = Center(stack.Key);
                 var focus = (_viewMin + _viewMax) * 0.5f;
@@ -946,10 +980,18 @@ public partial class MapView : Node3D
         }
     }
 
+    private UnitDto RepresentArmy(UnitDto[] group)
+    {
+        var representative = group.FirstOrDefault(u => u.Id == SelectedUnit) ?? group[0];
+        if (group.Length > 1) _displayedArmies[representative.Id] = group.Select(u => u.Id).ToArray();
+        return representative;
+    }
+
     private static Vector2 FormationSlot(int index, int count) => count switch
     {
         1 => Vector2.Zero,
         2 => new Vector2(index == 0 ? -0.22f : 0.22f, 0f),
+        >= 4 => new Vector2(index % 2 == 0 ? -0.22f : 0.22f, (index / 2 - (count - 1) / 4f) * 0.4f),
         _ => index switch
         {
             0 => new Vector2(0f, 0.29f),
@@ -972,11 +1014,11 @@ public partial class MapView : Node3D
             }
             n.Root.Position = Center(c.Tile);
             int era = c.VisualEra;
-            string look = $"{c.Owner}|{c.Pop}|{era}|{c.Capital}|{string.Join(',', c.Buildings)}";
+            string look = $"{c.Owner}|{c.Pop}|{era}|{c.Capital}|{string.Join(',', c.Buildings)}|{string.Join(',', c.Houses)}";
             if (n.Look != look)
             {
                 n.Look = look;
-                n.Body.Mesh = Town.City(c.Id, c.Pop, era, c.Capital, c.Buildings, OwnerColor(c.Owner));
+                n.Body.Mesh = Town.City(c.Id, c.Pop, era, c.Capital, c.Buildings, OwnerColor(c.Owner), c.Houses);
             }
             LayoutEntity(n.Root, n.Body, null, n.Copies);
         }

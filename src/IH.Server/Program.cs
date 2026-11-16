@@ -104,7 +104,7 @@ public static class Simulation
     /// <summary>Disables every leader penalty and laggard bonus - the control group for balance comparisons.</summary>
     public static BalanceConfig Off() => new()
     {
-        SciencePenalty = 0, CulturePenalty = 0, UpkeepPenalty = 0, SprawlPenalty = 0, UnrestPerPressure = 0,
+        SciencePenalty = 0, CulturePenalty = 0, UpkeepPenalty = 0, SprawlPenalty = 0,
         CatchUpStrength = 0, EchoBase = 0, EchoOpenBorders = 0,
     };
 
@@ -114,7 +114,7 @@ public static class Simulation
         var list = Enumerable.Range(0, players).Select(i => ($"AI{i}", true)).ToList();
         var g = Game.Create(settings, list, noBalance ? Off() : balance);
         g.P(0).Bonus = strong; // AI0 plays with a handicap in its favour to provoke a runaway leader
-        int protests = 0, secessions = 0, wars = 0, captures = 0;
+        int wars = 0, captures = 0;
         if (print) Console.WriteLine($"Карта типа {mapType}: суши {g.S.Tiles.Count(t => !t.IsWater) * 100 / g.S.Tiles.Length}%, клеток с ресурсами {g.S.Tiles.Count(t => t.Resource != Resource.None)}");
         if (print) Console.WriteLine($"Симуляция: {players} ИИ, {turns} ходов, seed {seed}, анти-сноуболл {(noBalance ? "ВЫКЛ" : "ВКЛ")}");
         var sw = System.Diagnostics.Stopwatch.StartNew();
@@ -124,8 +124,6 @@ public static class Simulation
             foreach (var e in g.Events)
                 switch (e.Dto.Type)
                 {
-                    case EventKind.Protest: protests++; break;
-                    case EventKind.Secession: secessions++; break;
                     case EventKind.WarDeclared: wars++; break;
                     case EventKind.CityCaptured: captures++; break;
                 }
@@ -144,7 +142,7 @@ public static class Simulation
             double med = AntiSnowball.Median(lv.ToList());
             Console.WriteLine($"Итог: AI0/медиана = {g.P(0).ScienceLevel / Math.Max(1, AntiSnowball.Median(g.Active.Where(p => p.Id != 0).Select(p => (double)p.ScienceLevel).ToList())):F2}; лидер/медиана по науке = {lv.Max() / Math.Max(1, med):F2}, лидер/аутсайдер = {lv.Max() / Math.Max(1, lv.Min()):F2}; " +
                               $"институтов {string.Join("/", g.Active.Select(p => p.Civics.Count + p.CivicLevel))}, религии: {string.Join(", ", g.S.Religions.Select(r => $"{r.Name}={g.S.Cities.Values.Count(c => c.Religion == r.Id)} гор."))}; " +
-                              $"роскоши у игроков {string.Join("/", g.Active.Select(p => p.Luxuries))}, кораблей {g.S.Units.Values.Count(u => u.Def.Sea)}, председатель {g.S.Chair}; войн {wars}, захватов {captures}, протестов {protests}, отделений {secessions}; вольных городов {g.CitiesOf(g.Neutral.Id).Count()}; {sw.ElapsedMilliseconds} мс");
+                              $"роскоши у игроков {string.Join("/", g.Active.Select(p => p.Luxuries))}, кораблей {g.S.Units.Values.Count(u => u.Def.Sea)}, председатель {g.S.Chair}; войн {wars}, захватов {captures}; вольных городов {g.CitiesOf(g.Neutral.Id).Count()}; {sw.ElapsedMilliseconds} мс");
         }
         return g;
     }

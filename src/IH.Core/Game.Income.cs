@@ -32,8 +32,8 @@ public sealed partial class Game
         Reconcile("science", "Прочие поступления и округление", (int)Math.Round(p.SciRate + p.EchoBonus));
         Reconcile("culture", "Прочие поступления и округление", (int)Math.Round(p.CultureRate));
         Add("faith", "Города и последователи", (int)p.FaithRate);
-        Add("favor", "Единоверцы", p.Brethren);
-        Reconcile("favor", "Институты и отношения с державами", (int)p.FavorRate);
+        foreach (var friend in FriendsOf(p)) Add("favor", $"Дружба с державой «{friend.Name}»", 1);
+        Reconcile("favor", "Институты", (int)p.FavorRate);
         foreach (var branch in Rules.Branches)
             Add(branch.Id, "Узлы, здания и подключённые ресурсы", p.PowerRate.GetValueOrDefault(branch.Id));
         return lines.ToArray();

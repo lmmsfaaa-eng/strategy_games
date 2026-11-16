@@ -23,21 +23,24 @@ public class UnitStackTests
     }
 
     [Fact]
-    public void Full_stack_blocks_a_fourth_friendly_unit()
+    public void Full_civilian_stack_blocks_a_fourth_worker_but_allows_more_troops()
     {
         var g = GameTests.New(2, 0);
         var city = FoundCapital(g, 0);
-        Add(g, 0, "worker", city.Tile);
-        Add(g, 0, "warrior", city.Tile);
+        for (int i = 0; i < Rules.MaxCiviliansPerTile; i++) Add(g, 0, "worker", city.Tile);
+        for (int i = 0; i < 9; i++) Add(g, 0, i % 2 == 0 ? "warrior" : "scout", city.Tile);
         int edge = OpenNeighbor(g, city.Tile);
-        var arriving = Add(g, 0, "warrior", edge);
+        var arriving = Add(g, 0, "worker", edge);
         Assert.Null(g.PathFor(arriving, city.Tile));
         Assert.NotNull(Cmd(g, 0, CmdType.MoveUnit, arriving.Id, city.Tile));
         Assert.Equal(edge, arriving.Tile);
         Assert.Equal(arriving.MaxMoves, arriving.Moves);
         Assert.False(g.CanSpawnUnit(0, arriving.Type, city.Tile));
-        Assert.Throws<InvalidOperationException>(() => Add(g, 0, "warrior", city.Tile));
-        g.RemoveUnit(g.At(city.Tile).First());
+        Assert.Throws<InvalidOperationException>(() => Add(g, 0, "worker", city.Tile));
+        var scout = Add(g, 0, "scout", edge);
+        Assert.Null(Cmd(g, 0, CmdType.MoveUnit, scout.Id, city.Tile));
+        Assert.Equal(city.Tile, scout.Tile);
+        g.RemoveUnit(g.At(city.Tile).First(u => u.Def.Role == UnitRole.Worker));
         Assert.Null(Cmd(g, 0, CmdType.MoveUnit, arriving.Id, city.Tile));
         Assert.Equal(city.Tile, arriving.Tile);
     }
@@ -48,7 +51,8 @@ public class UnitStackTests
         var g = GameTests.New(2, 0);
         var city = FoundCapital(g, 0);
         city.Pop = 3;
-        var guard = Add(g, 0, "warrior", city.Tile);
+        var guard = Add(g, 0, "worker", city.Tile);
+        Add(g, 0, "worker", city.Tile);
         Add(g, 0, "worker", city.Tile);
         Assert.Null(Cmd(g, 0, CmdType.SetProduction, city.Id, s: "u:settler"));
         g.P(0).Gold = 1000;
@@ -78,10 +82,10 @@ public class UnitStackTests
         var attacker = Add(g, 0, "warrior", OpenNeighbor(g, spot));
         Assert.Null(Cmd(g, 0, CmdType.MoveUnit, attacker.Id, spot));
         Assert.Equal(spot, attacker.Tile);
-        Assert.Equal(3, g.At(spot).Count);
+        Assert.Equal(4, g.At(spot).Count);
         Assert.Equal(spot, civilians[0].Tile);
         Assert.Equal(spot, civilians[1].Tile);
-        Assert.NotEqual(spot, civilians[2].Tile);
+        Assert.Equal(spot, civilians[2].Tile);
         Assert.All(civilians, u => Assert.Equal(0, u.Owner));
         Assert.Empty(g.CheckInvariants());
     }
@@ -96,8 +100,10 @@ public class UnitStackTests
         p.Power["magic"] = 50;
         int start = OpenNeighbor(g, city.Tile);
         var mage = Add(g, 0, "battle_mage", start);
-        var companion = Add(g, 0, "warrior", start);
-        var guard = Add(g, 0, "warrior", city.Tile);
+        var companion = Add(g, 0, "worker", start);
+        var guard = Add(g, 0, "worker", city.Tile);
+        Add(g, 0, "worker", city.Tile);
+        Add(g, 0, "worker", city.Tile);
         Assert.Contains("нет места", Cmd(g, 0, CmdType.Cast, mage.Id, city.Tile, "mg_teleport"));
         Assert.Equal(start, mage.Tile);
         Assert.Equal(start, companion.Tile);
@@ -110,7 +116,7 @@ public class UnitStackTests
     }
 
     [Fact]
-    public void Summoning_into_a_full_tile_spends_no_power_or_actions()
+    public void Summoning_with_full_housing_spends_no_power_or_actions()
     {
         var g = GameTests.New(2, 0);
         var city = FoundCapital(g, 0);
@@ -121,9 +127,9 @@ public class UnitStackTests
         g.S.Tiles[target].Terrain = Terrain.Plains;
         g.S.Tiles[target].Relief = Relief.Flat;
         var shaman = Add(g, 0, "shaman", city.Tile);
-        for (int i = 0; i < Rules.MaxUnitsPerTile; i++) Add(g, 0, "warrior", target);
+        for (int i = 0; i < 3; i++) Add(g, 0, "warrior", target);
         g.UpdateVisibility(p);
-        Assert.Contains("нет места", Cmd(g, 0, CmdType.Cast, shaman.Id, target, "sh_summon"));
+        Assert.Contains("жиль", Cmd(g, 0, CmdType.Cast, shaman.Id, target, "sh_summon"));
         Assert.Equal(50, p.Power[Rules.ShamanismBranch]);
         Assert.Equal(shaman.MaxMoves, shaman.Moves);
         Assert.False(p.Cooldowns.ContainsKey("sh_summon"));
@@ -131,18 +137,18 @@ public class UnitStackTests
     }
 
     [Fact]
-    public void Old_save_keeps_the_first_three_units_and_relocates_excess()
+    public void Old_save_keeps_troops_and_relocates_only_excess_civilians()
     {
         var g = GameTests.New(1, 0);
         var city = FoundCapital(g, 0);
-        Add(g, 0, "warrior", city.Tile);
-        Add(g, 0, "warrior", city.Tile);
-        var overflow = new Unit { Id = g.S.NextId++, Type = Rules.UnitIndex("warrior"), Tile = city.Tile, Owner = 0 };
+        for (int i = 0; i < 5; i++) Add(g, 0, "warrior", city.Tile);
+        for (int i = 0; i < Rules.MaxCiviliansPerTile; i++) Add(g, 0, "worker", city.Tile);
+        var overflow = new Unit { Id = g.S.NextId++, Type = Rules.UnitIndex("worker"), Tile = city.Tile, Owner = 0 };
         g.S.Units.Add(overflow.Id, overflow);
         string original = SaveGame.ToJson(g.S);
         int expected = g.Grid.Nb[city.Tile].Where(t => g.CanSpawnUnit(0, overflow.Type, t)).Min();
         var loaded = new Game(SaveGame.FromJson<GameState>(original));
-        Assert.Equal(3, loaded.At(city.Tile).Count);
+        Assert.Equal(9, loaded.At(city.Tile).Count);
         Assert.Equal(expected, loaded.S.Units[overflow.Id].Tile);
         Assert.Equal(city.Tile, overflow.Tile);
         Assert.Empty(loaded.CheckInvariants());
@@ -171,8 +177,7 @@ public class UnitStackTests
         Assert.Null(Cmd(g, 0, CmdType.SetNode, s: "sh_spirits"));
         Assert.Empty(g.S.Religions);
         Assert.Null(Cmd(g, 0, CmdType.FoundReligion, 0, 0));
-        Add(g, 0, "warrior", city.Tile);
-        Add(g, 0, "warrior", city.Tile);
+        for (int i = 0; i < Rules.MaxCiviliansPerTile; i++) Add(g, 0, "worker", city.Tile);
         int before = p.Faith;
         Assert.NotNull(Cmd(g, 0, CmdType.Recruit, city.Id));
         Assert.Equal(before, p.Faith);

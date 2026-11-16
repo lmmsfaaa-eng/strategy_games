@@ -13,7 +13,7 @@ public enum CmdType : byte
 {
     None, MoveUnit, FoundCity, Work, Fortify, Disband, SetProduction, RemoveQueue, Buy,
     SetResearch, SetSlider, DeclareWar, Propose, Respond, CancelBorders, EndTurn, Wake, Upgrade,
-    BuyFaith,   // A=city: finish the current project with faith
+    BuyFaith,   // A=city, S=catalog item (empty for current project)
     BuyTile,    // A=city, B=tile
     Gift,       // A=player, B=0 gold / 1 favor, C=amount
     Vote,       // A=candidate, B=favor to spend
@@ -33,6 +33,9 @@ public enum CmdType : byte
     AutoExplore = 80, // A=unit
     OfferContract = 81, // A=target, B=replaces incoming offer (0 for new), S=terms
     ManageContract = 82, // A=contract id, B=ContractAction
+    AssignCitizen = 86, // A=city, B=source tile, C=destination; B=C=-1 restores automatic assignments
+    EndFriendship = 83, // A=other nation
+    WaiveClaims = 84, // A=offending nation
     SandboxResources = 240, SandboxSpawn = 241, SandboxReveal = 242,
 }
 
@@ -185,9 +188,11 @@ public sealed class UnitDto : IWire
 public sealed class CityDetail : IWire
 {
     public int Food, FoodNeed, FoodRate, Prod, ProdRate, Commerce, Science, Gold, Culture, CultureRate,
-        Happy, Unhappy, Unrest, DisorderTurns, Maint;
+        Happy, Unhappy, Maint, HousingCapacity, EmpireHousingCapacity, EmpireHousingFree;
+    public bool ManualCitizens, HasLumberMill, HasQuarry;
     public string[] Queue = Array.Empty<string>(), Buildings = Array.Empty<string>();
-    public int[] Worked = Array.Empty<int>();
+    public int[] Worked = Array.Empty<int>(), Assignable = Array.Empty<int>();
+    public int[] HouseCosts = Array.Empty<int>(), HousePlaces = Array.Empty<int>();
     /// <summary>Religious pressure in the city: pairs of (religion id, points).</summary>
     public int[] Pressure = Array.Empty<int>();
     /// <summary>Temporary blessings on the city, ready to display.</summary>
@@ -196,21 +201,24 @@ public sealed class CityDetail : IWire
     {
         w.I(ref Food); w.I(ref FoodNeed); w.I(ref FoodRate); w.I(ref Prod); w.I(ref ProdRate); w.I(ref Commerce);
         w.I(ref Science); w.I(ref Gold); w.I(ref Culture); w.I(ref CultureRate); w.I(ref Happy); w.I(ref Unhappy);
-        w.I(ref Unrest); w.I(ref DisorderTurns); w.I(ref Maint); w.SA(ref Queue); w.SA(ref Buildings); w.IA(ref Worked); w.IA(ref Pressure); w.SA(ref Buffs);
+        w.I(ref Maint); w.SA(ref Queue); w.SA(ref Buildings); w.IA(ref Worked); w.IA(ref Pressure); w.SA(ref Buffs);
+        w.I(ref HousingCapacity); w.I(ref EmpireHousingCapacity); w.I(ref EmpireHousingFree); w.B(ref HasLumberMill); w.B(ref HasQuarry);
+        w.B(ref ManualCitizens); w.IA(ref Assignable); w.IA(ref HouseCosts); w.IA(ref HousePlaces);
     }
 }
 
 public sealed class CityDto : IWire
 {
     public int VisualEra;
-    public int Id, Owner, Tile, Pop, Radius, Religion; public string Name = ""; public bool Capital, Disorder;
+    public int Id, Owner, Tile, Pop, Radius, Religion; public string Name = ""; public bool Capital;
     /// <summary>What stands in the city. Anyone who sees the city sees its skyline: walls, temples, factories.</summary>
     public string[] Buildings = Array.Empty<string>();
+    public int[] Houses = Array.Empty<int>();
     public CityDetail? Detail; // only for the owner
     public void Sync(Wire w)
     {
         w.I(ref Id); w.I(ref Owner); w.I(ref Tile); w.I(ref Pop); w.I(ref Radius); w.S(ref Name);
-        w.B(ref Capital); w.B(ref Disorder); w.I(ref Religion); w.SA(ref Buildings); w.O(ref Detail); w.I(ref VisualEra);
+        w.B(ref Capital); w.I(ref Religion); w.SA(ref Buildings); w.O(ref Detail); w.I(ref VisualEra); w.IA(ref Houses);
     }
 }
 
@@ -226,7 +234,7 @@ public sealed class PlayerDto : IWire
     public bool HasBreachedContract;
     public string ParticipantName = "";
     public int Gold = -1, GoldRate;
-    public bool Allied, Embargo, Embargoed;
+    public bool Allied, Embargo, Embargoed, Friendly, GuaranteesPeace, PeaceGuaranteed, HasClaim;
     public void Sync(Wire w)
     {
         w.I(ref Id); w.I(ref Color); w.S(ref Name);
@@ -234,6 +242,7 @@ public sealed class PlayerDto : IWire
         w.B(ref AtWar); w.B(ref OpenBorders);
         w.By(ref SharedStats); w.By(ref SharingStats);
         w.B(ref Allied); w.B(ref Embargo); w.B(ref Embargoed);
+        w.B(ref Friendly); w.B(ref GuaranteesPeace); w.B(ref PeaceGuaranteed); w.B(ref HasClaim);
         w.I(ref Reputation); w.B(ref HasBreachedContract); w.S(ref ParticipantName);
         var access = (StatAccess)SharedStats;
         if ((access & StatAccess.Economy) != 0) { w.I(ref Gold); w.I(ref GoldRate); }

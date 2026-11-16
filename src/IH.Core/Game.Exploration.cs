@@ -77,7 +77,7 @@ public sealed partial class Game
                      (unit.Def.Role != UnitRole.Missionary && !Rel(p.Id, target.Owner).OpenBorders)))
                     continue;
                 var stack = At(next);
-                if (stack.Count >= Rules.MaxUnitsPerTile && stack[0].Owner == p.Id) continue;
+                if (visible.Contains(next) && CiviliansFull(next, unit.Def) && stack[0].Owner == p.Id) continue;
                 if (visible.Contains(next) && stack.Any(other => other.Owner != p.Id
                     && (!other.Def.X.Stealth || Spotted(other, p.Id)))) continue;
                 int step = Rules.MoveCost(from, target, mover);

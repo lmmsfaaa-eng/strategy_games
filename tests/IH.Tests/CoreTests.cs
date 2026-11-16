@@ -226,7 +226,7 @@ public class GameTests
         Assert.Null(Cmd(g, 0, CmdType.DeclareWar, 1));
         // drop an overwhelming army next to the enemy capital
         int spot = g.Grid.Nb[target.Tile].First(t => g.S.Tiles[t].Passable);
-        for (int i = 0; i < Rules.MaxUnitsPerTile; i++) g.AddUnit(0, Rules.UnitIndex("tank"), spot);
+        for (int i = 0; i < 4; i++) g.AddUnit(0, Rules.UnitIndex("tank"), spot);
         foreach (var u in g.At(spot).ToList())
         {
             if (target.Owner == 0) break;
@@ -376,12 +376,13 @@ public class GameTests
         foreach (int pid in new[] { 0, 1 }) Assert.Null(Cmd(g, pid, CmdType.FoundCity, g.UnitsOf(pid).First(u => u.Def.Role == UnitRole.Settler).Id));
         var p = g.P(0); var city = g.CitiesOf(0).Single();
         for (int i = 0; i < 3; i++) { Cmd(g, 0, CmdType.EndTurn); Cmd(g, 1, CmdType.EndTurn); }
-        Assert.True(p.Faith > 0 && p.Favor > 0);                                        // palace faith, peace favor
+        Assert.True(p.Faith > 0); // palace faith
+        Assert.Equal(0, p.FavorRate); // peace alone gives no approval
 
-        // faith buys peaceful projects only
+        // The catalog accepts faith for both military and civilian projects.
         p.Faith = 1000;
         Assert.Null(Cmd(g, 0, CmdType.SetProduction, city.Id, s: "u:warrior"));
-        Assert.NotNull(Cmd(g, 0, CmdType.BuyFaith, city.Id));
+        Assert.Null(Cmd(g, 0, CmdType.BuyFaith, city.Id));
         Assert.Null(Cmd(g, 0, CmdType.SetProduction, city.Id, s: "u:worker"));
         Assert.Null(Cmd(g, 0, CmdType.BuyFaith, city.Id));
         Assert.True(p.Faith < 1000);

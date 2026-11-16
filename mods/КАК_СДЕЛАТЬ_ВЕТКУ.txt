@@ -21,7 +21,7 @@
             технологии ("writing"), социальные институты ("c_rites")
   Power     сколько ресурса ветки узел даёт каждый ход
   Effect    бонус всей империи: SciPct GoldPct ProdPct CulPct FaithPct StrPct UpkeepCutPct
-            Happy Calm Food Culture Favor
+            Happy Food Culture Favor
 
 ЮНИТ (Units)  — Requires здесь и ниже: один id, который открывает
   Id, Name, Requires, Cost, Str (сила), Moves, CityDefPct, Sight, Sea
@@ -39,7 +39,7 @@
     SummonOnly   true — не строится, только призывается действием
 
 ЗДАНИЕ (Buildings)
-  Id, Name, Requires, Cost; доходы: Food Commerce ProdPct SciPct GoldPct Culture CulPct Happy DefPct Calm Faith Upkeep
+  Id, Name, Requires, Cost; доходы: Food Commerce ProdPct SciPct GoldPct Culture CulPct Happy DefPct Faith Upkeep
   Механики:
     Power                     ресурс ветки за ход
     UnitHeal                  лечит ваших юнитов в городе и рядом
@@ -55,7 +55,7 @@
   Duration  сколько ходов длится эффект или живёт призванный юнит
   Kind:
     Heal      лечит всех ваших юнитов           Harvest  +Amount пищи в каждом городе
-    Calm      снимает брожение                  Gold / Science / Culture  +Amount
+    Calm      +1 довольство на 5 ходов           Gold / Science / Culture  +Amount
     Reveal    открывает карту у столицы         Smite    урон врагам на вашей земле
     HealArea  лечит вокруг исполнителя (нужен Caster)
     Damage    урон по клетке (Target Tile)

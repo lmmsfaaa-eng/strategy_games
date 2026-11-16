@@ -34,7 +34,7 @@ public sealed partial class Game
 
         for (int i = 0; i < vis.Length; i++)
         {
-            if (!vis[i]) { p.KnownTiles[i] &= ~TileData.VisibleBit; continue; }
+            if (!vis[i]) { p.KnownTiles[i] &= ~(TileData.VisibleBit | TileData.WeatherMask); continue; }
             RememberVisibleTile(p, i);
         }
         return vis;
@@ -72,22 +72,30 @@ public sealed partial class Game
     public CityDto CityPublicDto(City c) => new()
     {
         Id = c.Id, Owner = c.Owner, Tile = c.Tile, Pop = c.Pop, Radius = c.Radius, Name = c.Name,
-        Capital = c.Capital, Disorder = c.DisorderTurns > 0, Religion = c.Religion,
+        Capital = c.Capital, Religion = c.Religion,
         VisualEra = Rules.EraOf(P(c.Owner).Known, P(c.Owner).Future),
         Buildings = c.Buildings.OrderBy(x => x, StringComparer.Ordinal).ToArray(),
+        Houses = Housing.Materials.Select(h => c.HouseCount(h.Material)).ToArray(),
     };
 
     private CityDto CityOwnDto(City c)
     {
         var d = CityPublicDto(c);
+        var p = P(c.Owner);
         d.Detail = new CityDetail
         {
             Food = c.Food, FoodNeed = Rules.FoodToGrow(c.Pop), FoodRate = c.FoodRate, Prod = c.Prod, ProdRate = c.ProdRate,
             Commerce = c.Commerce, Science = (int)Math.Round(c.SciRate), Gold = (int)Math.Round(c.GoldRate),
             Culture = c.Culture, CultureRate = Math.Max(1, (int)Math.Round(c.CulRate)), Happy = c.Happy, Unhappy = c.Unhappy,
-            Unrest = c.Unrest, DisorderTurns = c.DisorderTurns, Maint = (int)Math.Round(c.Maint + c.BuildingUpkeep),
+            Maint = (int)Math.Round(c.Maint + c.BuildingUpkeep),
+            HousingCapacity = CityHousingCapacity(c), EmpireHousingCapacity = p.HousingCapacity, EmpireHousingFree = p.HousingCapacity - p.HousingUsed,
+            HasLumberMill = p.HasLumberMill, HasQuarry = p.HasQuarry,
+            ManualCitizens = c.CitizenAssignments.Count > 0, Assignable = AvailableCitizenTiles(p, c),
+            HouseCosts = Housing.Materials.Select(HouseCost).ToArray(), HousePlaces = Housing.Materials.Select(HousePlaces).ToArray(),
             Queue = c.Queue.ToArray(), Buildings = c.Buildings.OrderBy(x => x).ToArray(), Worked = c.Worked.ToArray(),
-            Buffs = c.Buffs.Where(b => b.Until > S.Turn).Select(b => $"{b.Stat switch { "Food" => "пища", "Prod" => "производство", "Sci" => "наука", "Gold" => "золото", _ => "культура" }} +{b.Amount}% (ещё {b.Until - S.Turn} х.)").ToArray(),
+            Buffs = c.Buffs.Where(b => b.Until > S.Turn).Select(b => b.Stat == "Happy"
+                ? $"Довольство +{b.Amount} (ещё {b.Until - S.Turn} х.)"
+                : $"{b.Stat switch { "Food" => "пища", "Prod" => "производство", "Sci" => "наука", "Gold" => "золото", _ => "культура" }} +{b.Amount}% (ещё {b.Until - S.Turn} х.)").ToArray(),
             Pressure = c.Pressure.OrderByDescending(x => x.Value).SelectMany(x => new[] { x.Key, x.Value }).ToArray(),
         };
         return d;
@@ -149,6 +157,8 @@ public sealed partial class Game
                 Id = o.Id, Name = met || o.Neutral ? o.Name : "Неизвестная цивилизация", Color = o.Color, AI = o.IsAI, Alive = o.Alive, Neutral = o.Neutral,
                 Connected = o.Connected, EndedTurn = o.EndedTurn, Met = met,
                 Reputation = o.Reputation, HasBreachedContract = o.HasBreachedContract,
+                Friendly = rel?.Friendly == true, GuaranteesPeace = GuaranteesNonAggression(pid, o.Id),
+                PeaceGuaranteed = GuaranteesNonAggression(o.Id, pid), HasClaim = OwesClaim(o, pid),
                 ParticipantName = !o.IsAI && !o.Neutral ? o.Name : "",
                 SharedStats = (byte)access, SharingStats = (byte)GrantedBy(p, o),
                 Score = territory ? Score(o) : -1, Cities = territory ? CitiesOf(o.Id).Count() : -1,

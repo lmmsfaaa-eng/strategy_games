@@ -5,8 +5,9 @@ namespace IH.Shared;
 [Flags]
 public enum StatAccess : byte { None = 0, Economy = 1, Development = 2, Territory = 4, All = 7 }
 
-public enum DealKind : byte { GoldPerTurn, Resource, Passage, Statistics, Alliance }
+public enum DealKind : byte { GoldPerTurn, Resource, Passage, Statistics, Alliance, NonAggression, Friendship }
 public enum ContractAction : byte { ProposeEnd, AcceptEnd, DeclineEnd, Breach }
+public enum TradeIntent : byte { Empty, Gift, Demand, Exchange }
 
 public sealed class DealClause : IWire
 {
@@ -40,12 +41,27 @@ public sealed class TradeSide : IWire
     public DealClause[] Clauses = Array.Empty<DealClause>();
     public bool IsEmpty => Gold == 0 && Favor == 0 && Luxury == 0 && Tech.Length == 0 && Clauses.Length == 0;
     public bool HasAlliance => Clauses.Any(c => c.Kind == (byte)DealKind.Alliance);
+    public bool HasFriendship => Clauses.Any(c => c.Kind == (byte)DealKind.Friendship);
     public void Sync(Wire w) { w.I(ref Gold); w.I(ref Favor); w.I(ref Luxury); w.S(ref Tech); w.A(ref Clauses); }
 }
 
 public static class TradeTerms
 {
     public const int MaxAmount = 1_000_000;
+
+    public static TradeIntent Intent(TradeSide offered, TradeSide requested)
+    {
+        if (offered.IsEmpty) return requested.IsEmpty ? TradeIntent.Empty : TradeIntent.Demand;
+        // An alliance creates a mutual obligation and requires consent even in a legacy one-sided offer.
+        return requested.IsEmpty && !offered.HasAlliance && !offered.HasFriendship ? TradeIntent.Gift : TradeIntent.Exchange;
+    }
+
+    public static string IntentName(TradeIntent intent) => intent switch
+    {
+        TradeIntent.Gift => "Подарок",
+        TradeIntent.Demand => "Требование",
+        _ => "Обмен",
+    };
 
     public static string ClauseName(DealClause clause)
     {
@@ -56,8 +72,11 @@ public static class TradeTerms
             DealKind.Passage => "право прохода",
             DealKind.Statistics => "доступ к показателям",
             DealKind.Alliance => "оборонительный союз",
+            DealKind.NonAggression => "гарантия ненападения",
+            DealKind.Friendship => "дружба",
             _ => "",
         };
+        if (clause.Kind == (byte)DealKind.Friendship) return asset;
         return clause.Turns == 0 ? $"{asset} бессрочно" : $"{asset} на {clause.Turns} х.";
     }
 
@@ -86,7 +105,8 @@ public static class TradeTerms
                 DealKind.GoldPerTurn => value > 0 && value <= MaxAmount,
                 DealKind.Resource => value > 0 && value < Rules.Resources.Length,
                 DealKind.Statistics => value > 0 && value <= (int)StatAccess.All,
-                DealKind.Passage or DealKind.Alliance => value == 1,
+                DealKind.Passage or DealKind.Alliance or DealKind.NonAggression => value == 1,
+                DealKind.Friendship => value == 1 && turns == 0,
                 _ => false,
             };
             if (!valid || !seen.Add((category, category == DealKind.Resource ? value : 0))) return false;

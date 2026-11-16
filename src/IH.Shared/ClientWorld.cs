@@ -57,6 +57,13 @@ public sealed class ClientWorld
         && (Settings.Simultaneous || CurrentPlayer == MyId);
 
     public IEnumerable<UnitDto> UnitsAt(int tile) => Units.Values.Where(u => u.Tile == tile);
+    public bool HasUnitSpace(int owner, int tile, int type)
+    {
+        if (!Grid.Valid(tile) || type < 0 || type >= Rules.Units.Length) return false;
+        var occupants = UnitsAt(tile).ToArray();
+        return occupants.All(u => u.Owner == owner) && (Rules.IsStacked(Rules.Units[type])
+            || occupants.Count(u => !Rules.IsStacked(u.Def)) < Rules.MaxCiviliansPerTile);
+    }
     public CityDto? CityAt(int tile) => Tiles[tile].CityId >= 0 && Cities.TryGetValue(Tiles[tile].CityId, out var c) ? c : null;
     /// <summary>Technology, social institution or custom branch node.</summary>
     public bool Knows(string? tech) => tech == null || Rules.Satisfied(tech, Me.Known, Me.Future, Me.Civics, Me.CivicLevel, Me.Nodes);
@@ -74,7 +81,8 @@ public sealed class ClientWorld
             if (Vis[to] == 0) return -1;
             int c = Rules.MoveCost(Tiles[from], Tiles[to], mover);
             if (c < 0) return -1;
-            if (occupants[to].Count(other => other.Owner == u.Owner && other.Id != u.Id) >= Rules.MaxUnitsPerTile)
+            if (!Rules.IsStacked(u.Def) && occupants[to].Count(other => other.Owner == u.Owner && other.Id != u.Id
+                    && !Rules.IsStacked(other.Def)) >= Rules.MaxCiviliansPerTile)
                 return -1;
             if (occupants[to].Any(other => other.Owner != u.Owner && !CanAttack(to, other.Owner))) return -1;
             if (CityAt(to) is { } city && city.Owner != u.Owner && !CanAttack(to, city.Owner)) return -1;
@@ -196,8 +204,6 @@ public sealed class ClientWorld
             case EventKind.WarDeclared: return $"«{PlayerName(e.A)}» объявляет войну «{PlayerName(e.B)}»!";
             case EventKind.PeaceMade: return $"«{PlayerName(e.A)}» и «{PlayerName(e.B)}» заключили мир";
             case EventKind.BordersOpened: return $"«{PlayerName(e.A)}» и «{PlayerName(e.B)}» открыли границы";
-            case EventKind.Protest: return $"Социальное брожение: протесты в городе {e.S}!";
-            case EventKind.Secession: return $"Сепаратизм: город {e.S} отделился от «{PlayerName(e.B)}»!";
             case EventKind.PlayerDefeated: return $"Цивилизация «{PlayerName(e.A)}» уничтожена";
             case EventKind.Bankrupt: return $"Казна пуста: {e.S}";
             case EventKind.IdleCity: return $"Город {e.S} простаивает — выберите производство";

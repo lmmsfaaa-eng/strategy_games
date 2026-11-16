@@ -18,16 +18,17 @@ public enum Resource : byte
 }
 public enum ResClass : byte { None, Bonus, Strategic, Luxury }
 /// <summary>Tile improvements. WorkKind uses the same numbers plus Road.</summary>
-public enum Improvement : byte { None, Farm, Mine, Cottage, Plantation, Quarry, Pasture, Camp, FishingBoats, OilWell }
-public enum WorkKind : byte { None, Farm, Mine, Cottage, Plantation, Quarry, Pasture, Camp, FishingBoats, OilWell, Road }
+public enum Improvement : byte { None, Farm, Mine, Cottage, Plantation, Quarry, Pasture, Camp, FishingBoats, OilWell, LumberMill = 11 }
+public enum WorkKind : byte { None, Farm, Mine, Cottage, Plantation, Quarry, Pasture, Camp, FishingBoats, OilWell, Road, LumberMill }
 
 public sealed record ResDef(Resource Id, string Name, ResClass Class, int F, int P, int C, WorkKind Imp, string? Reveal = null);
 
 /// <summary>What a unit is able to cross; decides movement cost and passability.</summary>
 public readonly record struct Mover(bool Sea, bool Coast, bool Ocean, bool Fly = false);
 public enum UnitRole : byte { Military, Settler, Worker, Scout, Missionary }
+public enum WeatherKind : byte { Clear, Rain, Thunderstorm }
 
-/// <summary>Static tile data; identical representation on server and client.</summary>
+/// <summary>Tile data shared by the simulation and client.</summary>
 public struct TileData
 {
     public Terrain Terrain;
@@ -38,6 +39,9 @@ public struct TileData
     public bool Road;
     public int Owner;   // -1 = nobody
     public int CityId;  // -1 = no city
+    public WeatherKind Weather;
+    public byte FireTurns;
+    public bool Lightning;
 
     public const ulong ExploredBit = 1UL << 62;
     public const ulong VisibleBit = 1UL << 63;
@@ -46,6 +50,7 @@ public struct TileData
     /// <summary>Walkable land.</summary>
     public readonly bool Passable => !IsWater && Relief != Relief.Mountain;
     public const ulong ResourceMask = 63UL << 6;
+    public const ulong WeatherMask = 0x7FFUL << 48;
 
     public readonly ulong Pack()
     {
@@ -57,6 +62,9 @@ public struct TileData
         p |= (Road ? 1UL : 0) << 16;
         p |= (ulong)(Owner + 1) << 17;
         p |= (ulong)(CityId + 1) << 24;
+        p |= (ulong)Weather << 48;
+        p |= (ulong)FireTurns << 50;
+        p |= (Lightning ? 1UL : 0) << 58;
         return p;
     }
 
@@ -70,6 +78,9 @@ public struct TileData
         Road = ((p >> 16) & 1) != 0,
         Owner = (int)((p >> 17) & 127) - 1,
         CityId = (int)((p >> 24) & 0xFFFFFF) - 1,
+        Weather = (WeatherKind)((p >> 48) & 3),
+        FireTurns = (byte)((p >> 50) & 255),
+        Lightning = ((p >> 58) & 1) != 0,
     };
 }
 
@@ -104,7 +115,6 @@ public sealed record BuildingDef(string Id, string Name, int Cost, string? Tech)
         if (CulPct != 0) p.Add($"+{CulPct}% культуры");
         if (Happy != 0) p.Add($"+{Happy} довольства");
         if (DefPct != 0) p.Add($"+{DefPct}% обороны");
-        if (Calm != 0) p.Add($"-{Calm} брожения/ход");
         if (MaintCutPct != 0) p.Add($"-{MaintCutPct}% содержания города");
         if (With.Length > 0)
         {
@@ -149,7 +159,7 @@ public static class Rules
         "+5% производства и +5% силы юнитов за уровень",
         "+5% золота за уровень",
         "+5% науки за уровень",
-        "+5% культуры за уровень, +1 довольства за каждые 2 уровня, -1 брожения/ход за уровень",
+        "+5% культуры за уровень, +1 довольства за каждые 2 уровня",
     };
 
     public const int BranchNano = 0, BranchSpace = 1, BranchQuantum = 2, BranchSocial = 3;
@@ -432,6 +442,7 @@ public static class Rules
             case Improvement.Camp: c += 1; break;
             case Improvement.FishingBoats: f += 1; break;
             case Improvement.OilWell: p += 2; break;
+            case Improvement.LumberMill: p += 2; break;
         }
         if (ResourceWorked(t))
         {
@@ -445,7 +456,8 @@ public static class Rules
     }
 
     public const int EmbarkCost = 100; // boarding or landing ends the unit's move
-    public const int MaxUnitsPerTile = 3;
+    public const int MaxCiviliansPerTile = 3;
+    public static bool IsStacked(UnitDef unit) => unit.Role is UnitRole.Military or UnitRole.Scout;
 
     public static Mover MoverFor(UnitDef d, Func<string?, bool> knows) => new(d.Sea, knows("sailing"), knows("astronomy"), d.X.Flying);
 
@@ -481,22 +493,29 @@ public static class Rules
     {
         WorkKind.Farm => "agriculture", WorkKind.Mine => "mining", WorkKind.Cottage => "pottery", WorkKind.Road => "wheel",
         WorkKind.Plantation => "pottery", WorkKind.Quarry => "masonry", WorkKind.Pasture => "animal_husbandry",
-        WorkKind.Camp => "hunting", WorkKind.FishingBoats => "sailing", WorkKind.OilWell => "refining", _ => null,
+        WorkKind.Camp => "hunting", WorkKind.FishingBoats => "sailing", WorkKind.OilWell => "refining", WorkKind.LumberMill => "agriculture", _ => null,
     };
 
     public static int WorkTurns(WorkKind k) => k switch { WorkKind.None => 0, WorkKind.Road => 2, WorkKind.OilWell => 6, WorkKind.Mine => 5, _ => 4 };
+
+    public static TileData AfterWork(TileData tile, WorkKind kind)
+    {
+        if (kind == WorkKind.Road) tile.Road = true;
+        else tile.Improvement = (Improvement)kind;
+        return tile;
+    }
 
     public static string WorkName(WorkKind k) => k switch
     {
         WorkKind.Farm => "Ферма", WorkKind.Mine => "Рудник", WorkKind.Cottage => "Посёлок", WorkKind.Road => "Дорога",
         WorkKind.Plantation => "Плантация", WorkKind.Quarry => "Каменоломня", WorkKind.Pasture => "Пастбище",
-        WorkKind.Camp => "Лагерь", WorkKind.FishingBoats => "Рыбацкие суда", WorkKind.OilWell => "Буровая вышка", _ => "",
+        WorkKind.Camp => "Лагерь", WorkKind.FishingBoats => "Рыбацкие суда", WorkKind.OilWell => "Буровая вышка", WorkKind.LumberMill => "Лесопилка", _ => "",
     };
 
     public static readonly WorkKind[] AllWork =
     {
         WorkKind.Farm, WorkKind.Mine, WorkKind.Cottage, WorkKind.Plantation, WorkKind.Quarry, WorkKind.Pasture,
-        WorkKind.Camp, WorkKind.FishingBoats, WorkKind.OilWell, WorkKind.Road,
+        WorkKind.Camp, WorkKind.FishingBoats, WorkKind.OilWell, WorkKind.Road, WorkKind.LumberMill,
     };
 
     /// <summary>
@@ -517,6 +536,8 @@ public static class Rules
         {
             case WorkKind.Farm: return !t.Forest && t.Relief == Relief.Flat && t.Terrain is Terrain.Grassland or Terrain.Plains;
             case WorkKind.Mine: return !t.Forest && t.Relief == Relief.Hills;
+            case WorkKind.Quarry: return !t.Forest && t.Relief == Relief.Hills && t.Improvement == Improvement.None;
+            case WorkKind.LumberMill: return t.Forest && t.Improvement == Improvement.None;
             case WorkKind.Cottage:
                 return !t.Forest && t.Relief == Relief.Flat && t.Terrain is Terrain.Grassland or Terrain.Plains or Terrain.Desert or Terrain.Tundra;
             default: return false;
@@ -586,14 +607,14 @@ public static class Rules
         if (item == Wealth) return "Богатство";
         if (item.StartsWith("u:")) { int i = UnitIndex(item[2..]); return i >= 0 ? Units[i].Name : item; }
         if (item.StartsWith("b:")) return Building(item[2..])?.Name ?? item;
-        return item;
+        return Housing.Project(item)?.Name ?? item;
     }
 
     public static int ItemCost(string item)
     {
         if (item.StartsWith("u:")) { int i = UnitIndex(item[2..]); return i >= 0 ? Units[i].Cost : -1; }
         if (item.StartsWith("b:")) return Building(item[2..])?.Cost ?? -1;
-        return -1;
+        return Housing.Project(item)?.Cost ?? -1;
     }
 
     // --------------------------------------------------------------- civics
@@ -622,7 +643,6 @@ public static class Rules
             if (StrPct != 0) p.Add($"+{StrPct}% силы юнитов");
             if (UpkeepCutPct != 0) p.Add($"-{UpkeepCutPct}% содержания");
             if (Happy != 0) p.Add($"+{Happy} довольства в городах");
-            if (Calm != 0) p.Add($"-{Calm} брожения за ход");
             if (Food != 0) p.Add($"+{Food} пищи в городах");
             if (Culture != 0) p.Add($"+{Culture} культуры в городах");
             if (Favor != 0) p.Add($"+{Favor} одобрения за ход");
@@ -849,7 +869,7 @@ public static class Rules
         {
             "Heal" => $"лечит всех ваших юнитов на {Amount} HP",
             "Harvest" => $"+{Amount} пищи в каждом городе",
-            "Calm" => $"снимает {Amount} брожения во всех городах и прекращает беспорядки",
+            "Calm" => "добавляет +1 довольства на 5 ходов во всех ваших городах",
             "Gold" => $"+{Amount} золота",
             "Science" => $"+{Amount} к текущему исследованию",
             "Culture" => $"+{Amount} к текущему институту",

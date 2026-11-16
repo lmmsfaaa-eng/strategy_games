@@ -19,10 +19,9 @@ public partial class GameScreen
         RefreshUnit();
         RefreshOdds();
         RefreshNationHud();
-        RefreshAvatars();
-        // the city panel takes the right edge, so the log and the reminders step aside
+        if (_branchesNavigation != null) _branchesNavigation.Visible = HasBranchAdvisor;
+        // The city panel takes the right edge; the chat controls keep their explicit visibility state.
         bool city = _win == Win.City;
-        _logPanel.Visible = !city;
         if (city) _attentionPanel.Visible = false;
     }
 
@@ -183,7 +182,7 @@ public partial class GameScreen
                 int idx = i;
                 Item(Ico.Branch, PowerColor(i), $"{Rules.Branches[i].Name}: выберите узел", () => OpenBranch(idx), "Очки ветки копятся, пока узел не выбран");
             }
-            var idleCities = W.Cities.Values.Where(c => c.Owner == W.MyId && c.Detail is { Queue.Length: 0, DisorderTurns: 0 }).OrderBy(c => c.Id).ToList();
+            var idleCities = W.Cities.Values.Where(c => c.Owner == W.MyId && c.Detail is { Queue.Length: 0 }).OrderBy(c => c.Id).ToList();
             foreach (var c in idleCities.Take(2))
             {
                 int cid = c.Id, tile = c.Tile;
@@ -196,12 +195,6 @@ public partial class GameScreen
                 Item(Ico.Faith, Ui.Faith, "Можно основать религию", () => Toggle(Win.Religion, true), "Веры хватает на собственную религию", false);
             if (me.CongressIn <= 5 && me.Favor >= 10)
                 Item(Ico.Favor, Ui.Favor, $"Конгресс через {me.CongressIn} х. — голосуйте", () => OpenDiplomacy(DiplomacyTab.Congress), "Выборы председателя и резолюция: голоса — ваше одобрение", false);
-            foreach (var c in W.Cities.Values.Where(c => c.Owner == W.MyId && c.Detail is { } d && (d.DisorderTurns > 0 || d.Unrest >= 60)).Take(2))
-            {
-                int cid = c.Id, tile = c.Tile;
-                Item(Ico.Unrest, Ui.Bad, c.Detail!.DisorderTurns > 0 ? $"{c.Name}: беспорядки" : $"{c.Name}: брожение {c.Detail.Unrest}/100",
-                    () => { Map.CenterOn(tile); OpenCity(cid); }, "Довольство, храмы, единая вера и гарнизон успокаивают город", false);
-            }
             if (me.GoldRate < 0 && me.Gold + me.GoldRate * 5 < 0)
                 Item(Ico.Gold, Ui.Bad, $"Казна тает: {Ui.Signed(me.GoldRate)} за ход", () => Toggle(Win.Economy, true), "При пустой казне распускаются юниты и продаются здания", false);
         }
@@ -299,13 +292,29 @@ public partial class GameScreen
             {
                 var tile = W.Tiles[u.Tile];
                 if (tile.IsWater != def.Sea) continue;
-                if (!Rules.WorkFits(tile, kind) || !W.Knows(Rules.WorkTech(kind))) continue;
+                if (!Rules.WorkFits(tile, kind)) continue;
                 if (tile.Owner != W.MyId && !(kind == WorkKind.Road && tile.Owner < 0)) continue;
                 var k = kind;
-                // the improvement the tile's resource asks for is the obvious choice
-                bool wanted = tile.Resource != Resource.None && Rules.Res(tile.Resource).Imp == kind && (int)tile.Improvement != (int)kind;
-                row.AddChild(Ui.Btn($"{Rules.WorkName(kind)} · {Rules.WorkTurns(kind)} х.", () => UnitCommand(CmdType.Work, (int)k),
-                    wanted ? $"Подключит ресурс: {Rules.Res(tile.Resource).Name}" : null, 13, wanted ? "Primary" : null));
+                var built = Rules.AfterWork(tile, kind);
+                var (food, prod, commerce) = Rules.TileYield(tile);
+                var (newFood, newProd, newCommerce) = Rules.TileYield(built);
+                var benefits = new List<string>();
+                if (newFood != food) benefits.Add($"{Ui.Signed(newFood - food)} еды");
+                if (newProd != prod) benefits.Add($"{Ui.Signed(newProd - prod)} производства");
+                if (newCommerce != commerce) benefits.Add($"{Ui.Signed(newCommerce - commerce)} торговли");
+                bool wanted = Rules.ResourceWorked(built) && !Rules.ResourceWorked(tile);
+                if (wanted) benefits.Add(Rules.Res(tile.Resource).Name);
+                if (kind == WorkKind.Road) benefits.Add("быстрее движение по дороге");
+                if (kind == WorkKind.LumberMill) benefits.Add("×2 скорость строительства деревянных домов");
+                if (kind == WorkKind.Quarry) benefits.Add("открывает каменные дома");
+                var tech = Rules.WorkTech(kind);
+                bool known = W.Knows(tech);
+                string summary = string.Join(", ", benefits);
+                string requirement = known ? "" : $"\nНужно: {Rules.Tech(tech!)?.Name ?? tech}";
+                var button = Ui.Btn($"{Rules.WorkName(kind)} · {Rules.WorkTurns(kind)} х.\n{summary}{requirement}",
+                    () => UnitCommand(CmdType.Work, (int)k), summary, 12, wanted && known ? "Primary" : null);
+                button.Disabled = !known || !W.MyTurn;
+                row.AddChild(button);
             }
         if (u.AutoExplore || u.Fortified || u.Work != 0 || u.Goto >= 0)
             row.AddChild(Ui.Btn(u.AutoExplore ? "Остановить авторазведку" : "Отменить приказ", () => UnitCommand(CmdType.Wake), size: 13));
@@ -391,6 +400,12 @@ public partial class GameScreen
         }
         if (t.Owner >= 0) second.AddChild(Ui.Wrap(W.PlayerName(t.Owner), 230, 12, Map.OwnerColor(t.Owner).Lightened(0.3f)));
         else if (W.Vis[tile] == 1) second.AddChild(Ui.Lbl("туман войны", 12, Ui.Dim));
+        if (W.Vis[tile] == 2)
+        {
+            if (t.Weather != WeatherKind.Clear)
+                second.AddChild(Ui.Lbl(t.Weather == WeatherKind.Thunderstorm ? "Ливень с грозой" : "Дождь", 12, Ui.Science));
+            if (t.FireTurns > 0) second.AddChild(Ui.Lbl($"Пожар · ещё {t.FireTurns} х.", 12, Ui.Bad));
+        }
         _tileBox.AddChild(second);
     }
 

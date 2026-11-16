@@ -6,7 +6,7 @@ public sealed partial class Game
 {
     public bool CanSpawnUnit(int owner, int type, int tile)
         => owner >= 0 && owner < S.Players.Count && P(owner).Alive && type >= 0 && type < Rules.Units.Length
-            && HasUnitSpace(owner, tile) && FitsTile(owner, type, tile)
+            && HasUnitSpace(owner, tile, type) && FitsTile(owner, type, tile)
             && (CityAt(tile) is not { } city || city.Owner == owner)
             && (Rules.Units[type].Role == UnitRole.Missionary || CanEnterTerritory(owner, tile));
 
@@ -18,15 +18,15 @@ public sealed partial class Game
 
     private void MigrateUnitStacks()
     {
-        var overloaded = Enumerable.Range(0, Grid.Count).Where(t => At(t).Count > Rules.MaxUnitsPerTile).ToArray();
+        var overloaded = Enumerable.Range(0, Grid.Count).Where(t => CivilianCount(t) > Rules.MaxCiviliansPerTile).ToArray();
         if (overloaded.Length == 0) return;
         var placements = new List<(Unit Unit, int Tile)>();
-        var available = Enumerable.Range(0, Grid.Count).Select(t => Math.Max(0, Rules.MaxUnitsPerTile - At(t).Count)).ToArray();
+        var available = Enumerable.Range(0, Grid.Count).Select(t => Math.Max(0, Rules.MaxCiviliansPerTile - CivilianCount(t))).ToArray();
         var owners = Enumerable.Range(0, Grid.Count).Select(t => At(t).FirstOrDefault()?.Owner ?? -1).ToArray();
         foreach (int origin in overloaded)
         {
             var candidates = NearestTiles(origin).ToArray();
-            foreach (var unit in At(origin).OrderBy(u => u.Id).Skip(Rules.MaxUnitsPerTile))
+            foreach (var unit in At(origin).Where(u => !Rules.IsStacked(u.Def)).OrderBy(u => u.Id).Skip(Rules.MaxCiviliansPerTile))
             {
                 int tile = candidates.FirstOrDefault(t => available[t] > 0 && (owners[t] < 0 || owners[t] == unit.Owner)
                     && CanSpawnUnit(unit.Owner, unit.Type, t), -1);

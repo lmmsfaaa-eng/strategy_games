@@ -127,8 +127,12 @@ public class NetworkTests
                 int startingTile = game.UnitsOf(host.World.MyId).First().Tile;
                 int warrior = Rules.UnitIndex("warrior");
                 Assert.True(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, warrior));
-                Assert.False(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, warrior));
-                Assert.Equal(Rules.MaxUnitsPerTile, game.At(startingTile).Count);
+                Assert.True(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, warrior));
+                int worker = Rules.UnitIndex("worker");
+                Assert.True(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, worker));
+                Assert.True(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, worker));
+                Assert.False(RunCommand(host, CmdType.SandboxSpawn, secret, startingTile, worker));
+                Assert.Equal(Rules.MaxCiviliansPerTile, game.At(startingTile).Count(u => !Rules.IsStacked(u.Def)));
             }
 
             bool RunCommand(NetClient client, CmdType type, string token, int a = 0, int b = 0)

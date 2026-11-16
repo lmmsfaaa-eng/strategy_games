@@ -742,21 +742,50 @@ public static class Town
         unchecked { uint h = 2166136261; foreach (char ch in s) h = (h ^ ch) * 16777619; return (int)(h & 0x7FFFFFFF); }
     }
 
+    private static readonly Vector3[] CityPlots = Enumerable.Range(0, 22).Select(i =>
+    {
+        float angle = i < 8 ? Mathf.Tau * i / 8 + 0.2f : Mathf.Tau * (i - 8) / 14;
+        float radius = i < 8 ? 0.53f : 0.74f;
+        return V(Mathf.Cos(angle) * radius, 0, Mathf.Sin(angle) * radius);
+    }).ToArray();
+
+    private static IEnumerable<(string Building, int Slot)> LandmarkPlots(IReadOnlyCollection<string> buildings)
+    {
+        var taken = new bool[CityPlots.Length];
+        foreach (string id in buildings.OrderBy(x => x != "palace").ThenBy(x => x, StringComparer.Ordinal))
+        {
+            if (id == "walls") continue;
+            int start = id == "palace" ? 19 : Hash(id) % CityPlots.Length;
+            for (int n = 0; n < CityPlots.Length; n++)
+            {
+                int slot = (start + n) % CityPlots.Length;
+                if (taken[slot]) continue;
+                taken[slot] = true;
+                yield return (id, slot);
+                break;
+            }
+        }
+    }
+
+    public static IEnumerable<(string Building, Vector3 Position)> BuildingActivityPlots(IReadOnlyCollection<string> buildings)
+    {
+        foreach (var (building, slot) in LandmarkPlots(buildings))
+            yield return (building, CityPlots[slot]);
+        if (buildings.Contains("walls")) yield return ("walls", V(0.86f, 0, 0));
+    }
+
     /// <summary>
     /// The whole city as one mesh: houses that multiply with the population and change with the era, a landmark per
     /// building on a spot that never moves once taken, walls around it all, and the owner's flag.
     /// </summary>
-    public static Mesh City(int cityId, int pop, int era, bool capital, IReadOnlyCollection<string> buildings, Color team)
+    public static Mesh City(int cityId, int pop, int era, bool capital, IReadOnlyCollection<string> buildings, Color team, IReadOnlyList<int>? housing = null)
     {
         var b = new MeshBuilder { ContactShade = 0.19f };
         // Warm paving and open ground leave a small parade square in the centre.
         b.Column(V(0, 0.002f, 0), 0.4f, 0.009f, C(0x92866A), 10);
         b.Column(V(0, 0.011f, 0), 0.373f, 0.005f, C(0xC5B58D), 10);
         // Two rings of plots around the garrison square.
-        var slots = new List<Vector3>();
-        for (int i = 0; i < 8; i++) { float a = Mathf.Tau * i / 8 + 0.2f; slots.Add(V(Mathf.Cos(a) * 0.53f, 0, Mathf.Sin(a) * 0.53f)); }
-        for (int i = 0; i < 14; i++) { float a = Mathf.Tau * i / 14; slots.Add(V(Mathf.Cos(a) * 0.74f, 0, Mathf.Sin(a) * 0.74f)); }
-        var taken = new bool[slots.Count];
+        var taken = new bool[CityPlots.Length];
 
         void At(Vector3 p, float scale, Action draw)
         {
@@ -767,29 +796,36 @@ public static class Town
         }
 
         bool walls = buildings.Contains("walls");
-        foreach (string id in buildings.OrderBy(x => x != "palace").ThenBy(x => x, StringComparer.Ordinal))
+        foreach (var (id, slot) in LandmarkPlots(buildings))
         {
-            if (id == "walls") continue;
-            int start = id == "palace" ? 11 + 8 : Hash(id) % slots.Count, slot = -1; // the palace: back of the outer ring
-            for (int k = 0; k < slots.Count && slot < 0; k++) if (!taken[(start + k) % slots.Count]) slot = (start + k) % slots.Count;
-            if (slot < 0) break;
             taken[slot] = true;
-            string what = id;
-            At(slots[slot], id == "palace" ? 1.35f : 1.12f, () => Landmark(b, what, team));
+            At(CityPlots[slot], id == "palace" ? 1.35f : 1.12f, () => Landmark(b, id, team));
         }
 
-        // houses on the plots that are left: more of them as the city grows
+        // The inner row keeps homes visible even in cities with every landmark.
+        var homePlots = new List<(Vector3 Position, float Scale)>();
         var rnd = new Random(cityId * 7919 + 13);
-        int houses = Math.Clamp(2 + pop, 3, slots.Count);
-        var order = Enumerable.Range(0, slots.Count).OrderBy(_ => rnd.Next()).ToList();
-        foreach (int i in order)
+        foreach (int i in Enumerable.Range(0, CityPlots.Length).OrderBy(_ => rnd.Next()).Where(i => !taken[i]))
+            homePlots.Add((CityPlots[i], 1.12f));
+        for (int i = 0; i < 8; i++)
         {
-            if (houses <= 0) break;
-            if (taken[i]) continue;
-            houses--;
+            float angle = Mathf.Tau * i / 8 + 0.2f;
+            homePlots.Add((V(Mathf.Cos(angle) * 0.35f, 0, Mathf.Sin(angle) * 0.35f), 0.79f));
+        }
+        var homes = new List<HouseMaterial>();
+        if (housing != null)
+            for (int round = 0; round < homePlots.Count && homes.Count < homePlots.Count; round++)
+                foreach (var def in Housing.Materials)
+                    if (homes.Count < homePlots.Count && housing.Count > (int)def.Material && housing[(int)def.Material] > round)
+                        homes.Add(def.Material);
+        int visible = Math.Min(homePlots.Count, Math.Max(2 + pop / 2, homes.Count + 2));
+        for (int i = 0; i < visible; i++)
+        {
+            var (spot, scale) = homePlots[i];
             float tall = (float)rnd.NextDouble();
-            bool teamRoof = rnd.Next(4) == 0;
-            At(slots[i] + V((float)rnd.NextDouble() * 0.06f - 0.03f, 0, (float)rnd.NextDouble() * 0.06f - 0.03f), 1.2f, () => House(b, era, tall, teamRoof ? team : (Color?)null, pop));
+            Color? roof = rnd.Next(4) == 0 ? team : null;
+            if (i < homes.Count) At(spot, scale, () => MaterialHouse(b, homes[i], tall));
+            else At(spot, scale, () => House(b, era, tall, roof, pop));
         }
 
         if (walls) Walls(b, team);
@@ -798,6 +834,34 @@ public static class Town
         b.Box(V(0.74f, 1.08f, -0.62f), V(0.26f, 0.17f, 0.02f), team);
         if (capital) b.Gem(V(0.6f, 1.25f, -0.62f), 0.06f, C(0xF2CF63), 1, 4);
         return b.Commit()!;
+    }
+
+    private static void MaterialHouse(MeshBuilder b, HouseMaterial material, float variance)
+    {
+        float height = 0.15f + variance * 0.04f;
+        switch (material)
+        {
+            case HouseMaterial.Wood:
+                b.Box(V(0, height / 2, 0), V(0.18f, height, 0.16f), C(0xBD8B59));
+                for (int i = 1; i <= 3; i++)
+                    b.Box(V(0, height * i / 4, 0.083f), V(0.18f, 0.012f, 0.008f), C(0x896039));
+                b.Pyramid(V(0, height, 0), 0.15f, 0.115f, 4, C(0x704B33), Mathf.Pi / 4);
+                break;
+            case HouseMaterial.Clay:
+                b.Column(V(0, 0, 0), 0.102f, height, C(0xCC8A61), 7);
+                b.Pyramid(V(0, height, 0), 0.124f, 0.064f, 7, C(0xA96247));
+                break;
+            case HouseMaterial.Stone:
+                b.Box(V(0, height / 2, 0), V(0.19f, height, 0.17f), C(0xA5A39A));
+                b.Pyramid(V(0, height, 0), 0.15f, 0.085f, 4, C(0x63676B), Mathf.Pi / 4);
+                break;
+            default:
+                b.Box(V(0, height * 0.72f, 0), V(0.175f, height * 1.44f, 0.17f), C(0xD0CDC0));
+                b.Box(V(0, height * 1.45f, 0), V(0.20f, 0.026f, 0.185f), C(0x888B83));
+                b.Box(V(0, height, 0.086f), V(0.13f, 0.034f, 0.008f), C(0x526F7E));
+                break;
+        }
+        b.Box(V(0, 0.053f, 0.087f), V(0.035f, 0.091f, 0.025f), C(0x624D3D));
     }
 
     private static void House(MeshBuilder b, int era, float tall, Color? roof, int pop)
@@ -1128,6 +1192,15 @@ public static class Town
                 b.Box(V(-0.06f, 0.09f, -0.05f), V(0.4f, 0.06f, 0.28f), C(0xB8B8B0));
                 b.Box(V(-0.12f, 0.15f, -0.08f), V(0.24f, 0.06f, 0.18f), C(0xD0D0C8));
                 b.Box(V(0.2f, 0.1f, 0.12f), V(0.1f, 0.09f, 0.1f), C(0xE4E4DC));          // a cut block
+                break;
+            case IH.Shared.Improvement.LumberMill:
+                b.Box(V(-0.14f, 0.12f, 0), V(0.33f, 0.24f, 0.26f), C(0xA47348));
+                b.Pyramid(V(-0.14f, 0.24f, 0), 0.25f, 0.14f, 4, C(0x76523D), Mathf.Pi / 4);
+                for (int i = 0; i < 3; i++)
+                {
+                    b.Box(V(0.23f, 0.035f + 0.057f * i, 0.08f), V(0.28f, 0.05f, 0.11f), C(0x825936));
+                    b.Box(V(0.376f, 0.035f + 0.057f * i, 0.08f), V(0.016f, 0.044f, 0.09f), C(0xD5AA75));
+                }
                 break;
             case IH.Shared.Improvement.Pasture:
                 foreach (var (px, pz, sx, sz) in new[] { (0f, -0.2f, 0.62f, 0.025f), (0f, 0.2f, 0.62f, 0.025f), (-0.31f, 0f, 0.025f, 0.4f), (0.31f, 0f, 0.025f, 0.4f) })

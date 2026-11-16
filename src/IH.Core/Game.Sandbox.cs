@@ -24,7 +24,7 @@ public sealed partial class Game
             case CmdType.SandboxSpawn:
                 if ((uint)cmd.A >= S.Tiles.Length || (uint)cmd.B >= Rules.Units.Length)
                     return "Выберите клетку и тип юнита";
-                if (!HasUnitSpace(pid, cmd.A)) return "На клетке нет свободного места";
+                if (!HasUnitSpace(pid, cmd.A, cmd.B)) return "На клетке нет свободного места";
                 if (!CanSpawnUnit(pid, cmd.B, cmd.A)) return "Юнит не подходит для этой клетки";
                 AddUnit(pid, cmd.B, cmd.A);
                 return null;

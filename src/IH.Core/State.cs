@@ -14,10 +14,9 @@ public sealed class BalanceConfig
     public double CulturePenalty = 0.35;     //                       culture x (1 - k*g)
     public double UpkeepPenalty = 1.2;       // "logistic strain":    upkeep  x (1 + k*g + SprawlPenalty*sat(sprawl))
     public double SprawlPenalty = 0.5;
-    public double UnrestPerPressure = 14;    // "social unrest": unrest points per turn per city at g = 1
-    public double SecessionPressure = 0.3;   // minimum g for separatism
-    public int SecessionMinDistance = 6;
-    public int SecessionChancePct = 35;
+    public int BaseHousingPlaces = Housing.BasePlaces;
+    public int[] HouseCosts = Housing.Materials.Select(house => house.Cost).ToArray();
+    public int[] HousePlaces = Housing.Materials.Select(house => house.Places).ToArray();
     // Laggard bonuses. lag = clamp((-ITR - LagDeadzone) * LagScale, 0, 1)
     public double LagDeadzone = 0.08;
     public double LagScale = 1.6;
@@ -26,6 +25,8 @@ public sealed class BalanceConfig
     public double EchoBase = 0.04;           // share of a more advanced contact's science received per turn
     public double EchoOpenBorders = 0.06;    // extra share with an open borders agreement
     public double EchoCap = 0.6;             // cap relative to own science
+    public int RainChancePct = 25, ThunderstormChancePct = 5, LightningChancePct = 20, ClayWashChancePct = 10;
+    public int ForestFireSpreadPct = 10, ForestFireTurns = 5, ForestRegrowthTurns = 12;
 }
 
 public sealed class Unit
@@ -43,7 +44,7 @@ public sealed class Unit
 
 public sealed class City
 {
-    public int Id, Owner, Tile, Pop = 1, Food, Prod, Culture, Unrest, DisorderTurns, FoundedTurn;
+    public int Id, Owner, Tile, Pop = 1, Food, Prod, Culture, FoundedTurn;
     public string Name = "";
     public bool Capital;
     public List<string> Queue = new();
@@ -55,6 +56,18 @@ public sealed class City
     /// <summary>Temporary blessings from branch actions.</summary>
     public List<CityBuff> Buffs = new();
     public HashSet<string> Buildings = new();
+    public Dictionary<HouseMaterial, int> Houses = new();
+    /// <summary>Manually assigned work tiles, in priority order.</summary>
+    public List<int> CitizenAssignments = new();
+    public int HouseCount(HouseMaterial material) => Houses.GetValueOrDefault(material);
+    public bool RemoveHouse(HouseMaterial material)
+    {
+        int count = HouseCount(material);
+        if (count == 0) return false;
+        if (count == 1) Houses.Remove(material);
+        else Houses[material] = count - 1;
+        return true;
+    }
     // derived each refresh
     public List<int> Worked = new();
     public int FoodRate, ProdRate, Commerce, Happy, Unhappy;
@@ -79,6 +92,7 @@ public sealed class Player
     public Dictionary<int, StatAccess> StatGrants = new();
     public int Reputation = -1, LastReputationCredit = -10;
     public bool HasBreachedContract;
+    public ReputationHistory? ReputationClaims;
     public HashSet<int> Embargoes = new();
     public List<EspionageDto> Espionage = new();
     // social institutions
@@ -126,11 +140,26 @@ public sealed class Player
     /// <summary>Branch id -> stored power (mana, spirits...) and its income per turn.</summary>
     public Dictionary<string, int> Power = new(), PowerRate = new();
     public int TechCount => Known.Count + Future.Sum();
+    // derived city and empire capacity, sent only to the owner
+    public int HousingCapacity, HousingUsed;
+    public bool HasLumberMill, HasQuarry;
 }
 
 public sealed class CityBuff { public string Stat = ""; public int Amount, Until; }
 public sealed class Religion { public int Id, Founder, Belief, HolyCity; public string Name = ""; }
-public sealed class Relation { public bool AtWar, OpenBorders, Met, Allied; public int SinceTurn; }
+public sealed class Relation { public bool AtWar, OpenBorders, Met, Allied, Friendly; public int SinceTurn; }
+
+public sealed class ReputationHistory
+{
+    public int Score, LastCredit;
+    public bool HasBreached;
+    public List<ReputationEvent> Events = new();
+}
+
+public sealed class ReputationEvent
+{
+    public int Turn, Victim = -1;
+}
 public sealed class Proposal
 {
     public int Id, From, To, Expires;
@@ -156,6 +185,9 @@ public sealed class GameState
     public BalanceConfig Balance = new();
     public int W, H, Turn = 1, CurrentPlayer, NextId = 1;
     public ulong Rng = 0x9E3779B97F4A7C15;
+    // Hosted matches use a private seed. Zero lets standalone simulations derive a reproducible one.
+    public ulong WeatherSeed;
+    public Dictionary<int, int> ForestRegrowth = new();
     public TileData[] Tiles = Array.Empty<TileData>();
     // Stable iteration survives save/load even when removing units leaves gaps in the IDs.
     public SortedDictionary<int, Unit> Units = new();

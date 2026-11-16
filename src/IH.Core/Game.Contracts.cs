@@ -22,6 +22,9 @@ public sealed partial class Game
     public bool Allied(int a, int b) => a != b && (Rel(a, b).Allied
         || GrantedClauses(a, b).Concat(GrantedClauses(b, a)).Any(c => c.Kind == (byte)DealKind.Alliance));
 
+    public bool GuaranteesNonAggression(int giver, int recipient) => giver != recipient && !AtWar(giver, recipient)
+        && GrantedClauses(giver, recipient).Any(c => c.Kind == (byte)DealKind.NonAggression);
+
     private void RestoreContracts()
     {
         foreach (var old in S.LuxuryAgreements.Where(x => x.Expires > S.Turn))
@@ -36,8 +39,8 @@ public sealed partial class Game
 
     private void CreateContract(Proposal pr)
     {
-        var a = pr.Offered.Clauses;
-        var b = pr.Requested.Clauses;
+        var a = pr.Offered.Clauses.Where(c => c.Kind != (byte)DealKind.Friendship).ToArray();
+        var b = pr.Requested.Clauses.Where(c => c.Kind != (byte)DealKind.Friendship).ToArray();
         if (a.Length + b.Length == 0) return;
         S.Contracts.Add(new ActiveContract
         {
@@ -54,7 +57,7 @@ public sealed partial class Game
             || (offered.IsEmpty && requested.IsEmpty)) return "Добавьте условия сделки";
         var proposal = new Proposal { From = from.Id, To = id, Kind = ProposalKind.Trade,
             Expires = S.Turn + ProposalTurns, Offered = offered, Requested = requested };
-        bool gift = requested.IsEmpty && !offered.HasAlliance;
+        bool gift = TradeTerms.Intent(offered, requested) == TradeIntent.Gift;
         if (ProposalError(proposal, gift) is { } error) return error;
         var previous = replace == 0 ? null
             : S.Proposals.FirstOrDefault(p => p.Id == replace && p.From == id && p.To == from.Id && p.Expires > S.Turn);
@@ -90,6 +93,7 @@ public sealed partial class Game
         switch (action)
         {
             case ContractAction.Breach:
+                if (IsOnlyIncomingGuarantee(contract, p.Id, other)) return "Нарушить гарантию может только держава, которая её дала";
                 Breach(contract, p.Id);
                 return null;
             case ContractAction.ProposeEnd:
@@ -129,9 +133,11 @@ public sealed partial class Game
         var d = contract.Terms;
         int victim = d.From == who ? d.To : d.From;
         var p = P(who);
-        p.Reputation = Math.Min(25, (int)Math.Floor(0.35 * (p.Reputation < 0 ? 40 : p.Reputation)));
-        p.HasBreachedContract = true;
-        p.LastReputationCredit = S.Turn;
+        p.ReputationClaims ??= new ReputationHistory
+        {
+            Score = p.Reputation, LastCredit = p.LastReputationCredit, HasBreached = p.HasBreachedContract,
+        };
+        RecordReputation(p, new ReputationEvent { Turn = S.Turn, Victim = victim });
         var lost = LiveClauses(contract, who, includeDue: true);
         if (lost.Length == 0) lost = LiveClauses(contract, victim, includeDue: true);
         S.Contracts.Remove(contract);
@@ -140,10 +146,63 @@ public sealed partial class Game
         Emit(EventKind.ContractHarm, s: $"«{p.Name}» прекратила выполнять договор. Вы теряете: {detail}.", a: who, b: victim, only: victim);
     }
 
-    private void BreachContractsBetween(int actor, int other)
+    private bool IsOnlyIncomingGuarantee(ActiveContract contract, int actor, int other) =>
+        LiveClauses(contract, actor).Length == 0 && LiveClauses(contract, other) is { Length: > 0 } incoming
+        && incoming.All(c => c.Kind == (byte)DealKind.NonAggression);
+
+    private void BreachContractsBetween(int actor, int other, bool preserveGuarantees = false)
     {
         foreach (var contract in S.Contracts.Where(c => Matches(c.Terms, actor, other)).ToArray())
-            Breach(contract, actor);
+        {
+            if (preserveGuarantees && LiveClauses(contract, actor).Concat(LiveClauses(contract, other))
+                    .Any(c => c.Kind == (byte)DealKind.NonAggression)) continue;
+            if (IsOnlyIncomingGuarantee(contract, actor, other)) S.Contracts.Remove(contract);
+            else Breach(contract, actor);
+        }
+    }
+
+    private static bool OwesClaim(Player offender, int victim) =>
+        offender.ReputationClaims?.Events.Any(e => e.Victim == victim) == true;
+
+    private string? CmdWaiveClaims(Player claimant, int id)
+    {
+        if (id < 0 || id >= S.Players.Count || id == claimant.Id || !OwesClaim(P(id), claimant.Id))
+            return "Нет претензий к этой державе";
+        var offender = P(id);
+        var history = offender.ReputationClaims!;
+        history.Events.RemoveAll(e => e.Victim == claimant.Id);
+        offender.Reputation = history.Score;
+        offender.LastReputationCredit = history.LastCredit;
+        offender.HasBreachedContract = history.HasBreached;
+        foreach (var entry in history.Events) ApplyReputation(offender, entry);
+        if (history.Events.All(e => e.Victim < 0)) offender.ReputationClaims = null;
+        Emit(EventKind.Info, s: $"«{claimant.Name}» отказалась от претензий к вам.", only: id);
+        return null;
+    }
+
+    private static void RecordReputation(Player p, ReputationEvent entry)
+    {
+        var events = p.ReputationClaims?.Events;
+        if (events != null && (entry.Victim >= 0 || events.Count == 0 || events[^1].Victim >= 0 || events[^1].Turn != entry.Turn))
+            events.Add(entry);
+        ApplyReputation(p, entry);
+    }
+
+    private static void ApplyReputation(Player p, ReputationEvent entry)
+    {
+        if (entry.Victim >= 0)
+        {
+            p.Reputation = Math.Min(25, (int)Math.Floor(0.35 * (p.Reputation < 0 ? 40 : p.Reputation)));
+            p.HasBreachedContract = true;
+        }
+        else
+        {
+            if (p.Reputation >= 0 && entry.Turn - p.LastReputationCredit < 10) return;
+            p.Reputation = p.HasBreachedContract
+                ? Math.Min(90, p.Reputation + (int)Math.Ceiling(0.2 * (90 - p.Reputation)))
+                : 100;
+        }
+        p.LastReputationCredit = entry.Turn;
     }
 
     private void TickContracts()
@@ -177,11 +236,7 @@ public sealed partial class Game
             bool intervalCompleted = S.Turn - last >= 10;
             if (!due.Any(c => (c.Turns > 0 && started + c.Turns == S.Turn) || (c.Turns == 0 && intervalCompleted))) return;
             last = S.Turn;
-            if (player.Reputation >= 0 && S.Turn - player.LastReputationCredit < 10) return;
-            player.LastReputationCredit = S.Turn;
-            player.Reputation = player.HasBreachedContract
-                ? Math.Min(90, player.Reputation + (int)Math.Ceiling(0.2 * (90 - player.Reputation)))
-                : 100;
+            RecordReputation(player, new ReputationEvent { Turn = S.Turn });
         }
     }
 

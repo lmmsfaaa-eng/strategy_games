@@ -86,7 +86,7 @@ public class AntiSnowballTests
     }
 
     [Fact]
-    public void Runaway_leader_suffers_protests_and_separatism()
+    public void Runaway_leader_keeps_cities_under_strain_without_protests_or_separatism()
     {
         var g = Three();
         for (int pid = 0; pid < 3; pid++)
@@ -110,12 +110,11 @@ public class AntiSnowballTests
             secessions += g.Events.Count(e => e.Dto.Type == EventKind.Secession);
             g.Events.Clear();
         }
-        Assert.True(g.P(0).Pressure > g.Bal.SecessionPressure);
-        Assert.True(protests > 0, "leader should face protests");
-        Assert.True(secessions > 0, "distant cities should secede");
-        Assert.True(g.CitiesOf(g.Neutral.Id).Any());
-        Assert.True(g.CitiesOf(0).Any(c => c.Capital), "the capital never secedes");
-        Assert.Empty(g.S.Cities.Values.Where(c => c.Owner == 1 || c.Owner == 2).Where(c => c.DisorderTurns > 0));
+        Assert.True(g.P(0).Pressure > 0.3);
+        Assert.True(g.P(0).SciMult < 1);
+        Assert.Equal(0, protests);
+        Assert.Equal(0, secessions);
+        Assert.Equal(5, g.CitiesOf(0).Count());
     }
 
     [Fact]

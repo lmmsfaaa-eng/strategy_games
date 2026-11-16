@@ -21,7 +21,7 @@ public class ContractAndPurchaseTests
     }
 
     [Fact]
-    public void Gold_purchase_places_a_unit_immediately_and_full_stack_costs_nothing()
+    public void Gold_purchase_places_a_unit_immediately_and_full_housing_costs_nothing()
     {
         var g = GameTests.New(1, 0);
         var p = g.P(0);

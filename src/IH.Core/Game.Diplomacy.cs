@@ -16,6 +16,17 @@ public sealed partial class Game
 
     private static bool Between(int from, int to, int a, int b) => (from == a && to == b) || (from == b && to == a);
 
+    private IEnumerable<Player> FriendsOf(Player player) =>
+        Active.Where(other => other.Id != player.Id && Rel(player.Id, other.Id).Friendly);
+
+    private string? CmdEndFriendship(Player p, int id)
+    {
+        if (DiplomaticTarget(p, id) == null || !Rel(p.Id, id).Friendly) return "Дружба не заключена";
+        Rel(p.Id, id).Friendly = false;
+        Emit(EventKind.Info, s: $"«{p.Name}» прекратила дружбу", only: id);
+        return null;
+    }
+
     private string? CmdSetStatAccess(Player p, int id, int mask)
     {
         if (DiplomaticTarget(p, id) == null) return "С этой державой нет контакта";
@@ -45,7 +56,7 @@ public sealed partial class Game
         if (enabled == 1)
         {
             if (!p.Embargoes.Add(id)) return null;
-            BreachContractsBetween(p.Id, id);
+            BreachContractsBetween(p.Id, id, preserveGuarantees: true);
             StopTrade(p.Id, id);
         }
         else if (!p.Embargoes.Remove(id)) return null;
@@ -69,6 +80,7 @@ public sealed partial class Game
         if (q == null) return "С этой державой нет контакта";
         var rel = Rel(p.Id, q.Id);
         if (rel.AtWar) return "Вы уже воюете";
+        if (GuaranteesNonAggression(p.Id, id)) return "Сначала прекратите свою гарантию ненападения";
         if (Allied(p.Id, id)) return "Сначала расторгните оборонительный союз";
         DeclareWar(p, q);
         foreach (var ally in Active.Where(ally => ally.Id != p.Id && ally.Id != q.Id).ToList())
@@ -88,7 +100,7 @@ public sealed partial class Game
         int a = aggressor.Id, b = defender.Id;
         BreachContractsBetween(a, b);
         var rel = Rel(a, b);
-        rel.Met = true; rel.AtWar = true; rel.OpenBorders = false; rel.SinceTurn = S.Turn;
+        rel.Met = true; rel.AtWar = true; rel.OpenBorders = false; rel.Friendly = false; rel.SinceTurn = S.Turn;
         StopTrade(a, b);
         S.Proposals.RemoveAll(x => Between(x.From, x.To, a, b));
         S.DefenseCalls.RemoveAll(x => Between(x.Recipient, x.Aggressor, a, b));
@@ -104,6 +116,7 @@ public sealed partial class Game
     {
         var call = S.DefenseCalls.FirstOrDefault(x => x.Id == id && x.Recipient == p.Id);
         if (call == null || !ValidDefenseCall(call)) return "Призыв к защите уже неактуален";
+        if (accept && GuaranteesNonAggression(p.Id, call.Aggressor)) return "Гарантия ненападения не позволяет вступить в эту войну";
         S.DefenseCalls.Remove(call);
         if (accept) DeclareWar(p, P(call.Aggressor));
         Emit(EventKind.Info, s: accept ? $"«{p.Name}» приняла призыв к защите" : $"«{p.Name}» отклонила призыв к защите", only: call.Ally);
@@ -184,7 +197,9 @@ public sealed partial class Game
 
     private string? TradeError(Player from, Player to, TradeSide offered, TradeSide requested, bool checkRequested)
     {
-        if (offered.Clauses.Length + requested.Clauses.Length > 0 &&
+        if (offered.HasFriendship != requested.HasFriendship) return "Дружба должна быть взаимной";
+        if (offered.HasFriendship && Rel(from.Id, to.Id).Friendly) return "Дружба уже заключена";
+        if (offered.Clauses.Concat(requested.Clauses).Any(c => c.Kind != (byte)DealKind.Friendship) &&
             new[] { from.Id, to.Id }.Any(pid => S.Contracts.Count(c => c.Terms.From == pid || c.Terms.To == pid) >= 32))
             return "Слишком много действующих договоров";
         if (!CanSupplyTrade(from, to, offered, checkRequested))
@@ -206,6 +221,7 @@ public sealed partial class Game
             (!HasConnectedResource(source, c.Value) || GrantedClauses(source.Id, recipient.Id)
                 .Any(active => active.Kind == c.Kind && active.Value == c.Value)))) return false;
         if (side.HasAlliance && Allied(source.Id, recipient.Id)) return false;
+        if (side.Clauses.Any(c => c.Kind == (byte)DealKind.NonAggression) && GuaranteesNonAggression(source.Id, recipient.Id)) return false;
         if (side.Luxury != 0 && (!HasConnectedResource(source, side.Luxury)
             || S.LuxuryAgreements.Any(x => x.From == source.Id && x.To == recipient.Id && x.Resource == side.Luxury && x.Expires > S.Turn)))
             return false;
@@ -247,6 +263,7 @@ public sealed partial class Game
                 Emit(EventKind.Info, s: $"«{a.Name}» заключает с вами оборонительный союз", only: b.Id);
                 break;
             case ProposalKind.Trade:
+                if (pr.Offered.HasFriendship) rel.Friendly = true;
                 a.Gold += pr.Requested.Gold - pr.Offered.Gold;
                 b.Gold += pr.Offered.Gold - pr.Requested.Gold;
                 a.Favor += pr.Requested.Favor - pr.Offered.Favor;
@@ -288,6 +305,7 @@ public sealed partial class Game
         foreach (var other in S.Players.Where(x => x.Id != pid))
         {
             Rel(pid, other.Id).Allied = false;
+            Rel(pid, other.Id).Friendly = false;
             other.StatGrants.Remove(pid);
             other.Embargoes.Remove(pid);
             other.Espionage.RemoveAll(x => x.Target == pid && x.Observed < 0);

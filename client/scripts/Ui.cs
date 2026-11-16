@@ -300,7 +300,7 @@ public static class Ui
 
 public enum Ico
 {
-    None, Gold, Science, Culture, Faith, Favor, Food, Prod, Power, Happy, Unrest, Sword, Shield, Moves, Heart, Pop, Turn,
+    None, Gold, Science, Culture, Faith, Favor, Food, Prod, Power, Happy, Sword, Shield, Moves, Heart, Pop, Turn,
     Warn, Check, City, Chart, Help, Branch, Ship, Star, Close, Bow, Sleep, Scroll,
 }
 
@@ -410,10 +410,6 @@ public partial class Icon : Control
                 ci.DrawCircle(c0, 0.46f * s, col);
                 ci.DrawCircle(P(0.35f, 0.4f), 0.07f * s, dark); ci.DrawCircle(P(0.65f, 0.4f), 0.07f * s, dark);
                 ci.DrawArc(P(0.5f, 0.5f), 0.24f * s, 0.35f, Mathf.Pi - 0.35f, 12, dark, Math.Max(1.2f, 0.08f * s), true);
-                break;
-            case Ico.Unrest:
-                Poly(0.52f, 0.02f, 0.74f, 0.34f, 0.86f, 0.64f, 0.72f, 0.9f, 0.5f, 0.98f, 0.28f, 0.9f, 0.14f, 0.64f, 0.26f, 0.4f, 0.38f, 0.54f, 0.4f, 0.28f);
-                ci.DrawColoredPolygon(new[] { P(0.5f, 0.52f), P(0.64f, 0.74f), P(0.5f, 0.92f), P(0.36f, 0.74f) }, col.Lightened(0.5f));
                 break;
             case Ico.Sword:
                 Stroke(0.13f, 0.86f, 0.08f, 0.32f, 0.62f);
